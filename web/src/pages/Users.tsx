@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api'
-import type { Grant, Group, UserRow } from '../types'
-import { Btn, Confirm, Drawer, ErrorText, Field } from '../ui'
+import type { Grant, Group, PluginType, UserRow } from '../types'
+import { Btn, Confirm, Drawer, ErrorText, Field, Modal, TextInput } from '../ui'
 
 export function UsersPage({ onChanged }: { onChanged: () => void }) {
   const [users, setUsers] = useState<UserRow[]>([])
   const [rejections, setRejections] = useState<{ display: string; reason: string; ts: string }[]>([])
   const [err, setErr] = useState('')
   const [detail, setDetail] = useState<UserRow | null>(null)
+  const [newOpen, setNewOpen] = useState(false)
   const [delTarget, setDelTarget] = useState<UserRow | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -29,6 +30,9 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
       <div className="mb-4 flex items-center gap-2">
         <div className="mono-label">USERS</div>
         <div className="text-[12px] text-muted">过了准入规则的身份自动登记；能读什么由授权决定</div>
+        <Btn variant="primary" className="ml-auto" onClick={() => setNewOpen(true)}>
+          + 新建用户
+        </Btn>
       </div>
 
       <ErrorText>{err}</ErrorText>
@@ -90,6 +94,15 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
         />
       )}
 
+      <NewUserModal
+        open={newOpen}
+        onOpenChange={setNewOpen}
+        onCreated={async () => {
+          await load()
+          onChanged()
+        }}
+      />
+
       <Confirm
         open={delTarget != null}
         onOpenChange={(v) => !v && setDelTarget(null)}
@@ -114,6 +127,105 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
         它的个人授权与组成员关系会一并删除。它下次过准入会重新登记。
       </Confirm>
     </div>
+  )
+}
+
+/* ---------- 新建用户（预配置 / 测试） ---------- */
+
+function NewUserModal({
+  open,
+  onOpenChange,
+  onCreated,
+}: {
+  open: boolean
+  onOpenChange: (v: boolean) => void
+  onCreated: () => Promise<void> | void
+}) {
+  const [types, setTypes] = useState<PluginType[]>([])
+  const [type, setType] = useState('')
+  const [externalId, setExternalId] = useState('')
+  const [display, setDisplay] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setErr('')
+    api
+      .plugins()
+      .then((ts) => {
+        setTypes(ts)
+        if (!type && ts.length > 0) setType(ts[0].type)
+      })
+      .catch((e) => setErr(e instanceof ApiError ? e.message : '加载插件类型失败'))
+  }, [open])
+
+  const isGithub = type === 'github_oidc'
+
+  return (
+    <Modal open={open} onOpenChange={onOpenChange} title="NEW USER" width={460}>
+      <div className="space-y-4">
+        <Field label="插件类型">
+          <select
+            className="h-9 w-full border border-line bg-bg px-2 text-[12.5px] text-text focus:border-accent/70 focus:outline-none"
+            value={type}
+            onChange={(e) => setType(e.target.value)}
+          >
+            {types.map((t) => (
+              <option key={t.type} value={t.type}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field
+          label="外部 ID"
+          hint={
+            isGithub
+              ? '仓库的数字 repository_id（GitHub 仓库页 URL 或 API 可查；将来真实令牌敲门会按此键命中同一条记录）'
+              : '口令类实例配置的用户名'
+          }
+        >
+          <TextInput
+            mono
+            value={externalId}
+            placeholder={isGithub ? '987654321' : 'ci-runner'}
+            onChange={(e) => setExternalId(e.target.value)}
+          />
+        </Field>
+        <Field label="显示名（可选，留空取外部 ID）">
+          <TextInput value={display} placeholder={isGithub ? 'lyzz0612/minigames' : 'ci-runner'} onChange={(e) => setDisplay(e.target.value)} />
+        </Field>
+        <div className="text-[11.5px] leading-5 text-muted">
+          建好后即可在「详情 / 授权」里配授权——适合在真实请求到来前预配置。
+        </div>
+        <ErrorText>{err}</ErrorText>
+        <div className="flex justify-end gap-2">
+          <Btn onClick={() => onOpenChange(false)}>取消</Btn>
+          <Btn
+            variant="primary"
+            disabled={busy || !type || !externalId.trim()}
+            onClick={async () => {
+              setBusy(true)
+              setErr('')
+              try {
+                await api.createUser(type, externalId.trim(), display.trim())
+                setExternalId('')
+                setDisplay('')
+                onOpenChange(false)
+                await onCreated()
+              } catch (e) {
+                setErr(e instanceof ApiError ? e.message : '创建失败')
+              } finally {
+                setBusy(false)
+              }
+            }}
+          >
+            {busy ? '创建中…' : '创建'}
+          </Btn>
+        </div>
+      </div>
+    </Modal>
   )
 }
 

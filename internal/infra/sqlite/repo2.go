@@ -160,6 +160,9 @@ func (r *Repo) CreateUser(ctx context.Context, u domain.User) (domain.User, erro
 		 VALUES(?, ?, ?, ?, 'active', ?, ?, ?)`,
 		u.ProviderType, u.ExternalID, u.Display, u.Kind, sourceID, u.CreatedAt, u.LastSeenAt)
 	if err != nil {
+		if isUnique(err) {
+			return domain.User{}, fmt.Errorf("%w: 用户 %s:%s 已存在", app.ErrConflict, u.ProviderType, u.ExternalID)
+		}
 		return domain.User{}, fmt.Errorf("create user: %w", err)
 	}
 	u.ID, _ = res.LastInsertId()

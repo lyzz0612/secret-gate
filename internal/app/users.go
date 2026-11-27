@@ -4,16 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
+	"github.com/lyzz0612/deploy-center/internal/app/plugins"
 	"github.com/lyzz0612/deploy-center/internal/domain"
 )
 
-// UserService 用户管理：准入通过的身份自动登记，这里只有查询与删除。
+// UserService 用户管理：准入通过的身份自动登记；后台也可手动预建（测试与预配置）。
 type UserService struct {
-	repo Repo
+	repo     Repo
+	registry *plugins.Registry
 }
 
-func NewUserService(repo Repo) *UserService { return &UserService{repo: repo} }
+func NewUserService(repo Repo, registry *plugins.Registry) *UserService {
+	return &UserService{repo: repo, registry: registry}
+}
 
 func (s *UserService) List(ctx context.Context) ([]domain.User, error) {
 	return s.repo.ListUsers(ctx)
@@ -21,6 +27,35 @@ func (s *UserService) List(ctx context.Context) ([]domain.User, error) {
 
 func (s *UserService) Get(ctx context.Context, id int64) (*domain.User, error) {
 	return s.repo.UserByID(ctx, id)
+}
+
+// Create 后台手动建用户（预配置用）：真实请求来了按 (类型, 外部ID) 命中同一条记录。
+func (s *UserService) Create(ctx context.Context, providerType, externalID, display string) (domain.User, error) {
+	providerType = strings.TrimSpace(providerType)
+	externalID = strings.TrimSpace(externalID)
+	if providerType == "" || len(providerType) > 64 {
+		return domain.User{}, fmt.Errorf("%w: 类型必填且不超过 64 字符", ErrInvalid)
+	}
+	if _, ok := s.registry.Get(providerType); !ok {
+		return domain.User{}, fmt.Errorf("%w: 未知插件类型 %q", ErrInvalid, providerType)
+	}
+	if externalID == "" || len(externalID) > 128 {
+		return domain.User{}, fmt.Errorf("%w: 外部 ID 必填且不超过 128 字符", ErrInvalid)
+	}
+	if display == "" {
+		display = externalID
+	}
+	if len(display) > 128 {
+		return domain.User{}, fmt.Errorf("%w: 显示名超过 128 字符", ErrInvalid)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	return s.repo.CreateUser(ctx, domain.User{
+		ProviderType: providerType,
+		ExternalID:   externalID,
+		Display:      display,
+		Kind:         "machine",
+		CreatedAt:    now,
+	})
 }
 
 // Delete 真删，连带清授权与组成员关系。该身份下次过准入会重新登记。

@@ -366,6 +366,24 @@ func (s *server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+func (s *server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ProviderType string `json:"provider_type"`
+		ExternalID   string `json:"external_id"`
+		Display      string `json:"display"`
+	}
+	if err := readJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	u, err := s.deps.Users.Create(r.Context(), body.ProviderType, body.ExternalID, body.Display)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, u)
+}
+
 func (s *server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {

@@ -93,7 +93,7 @@ func run(args []string) error {
 		Secrets:       app.NewSecretService(repo, sealer),
 		Identity:      app.NewIdentityService(repo, registry),
 		Providers:     app.NewProviderService(repo, registry),
-		Users:         app.NewUserService(repo),
+		Users:         app.NewUserService(repo, registry),
 		UserGroups:    app.NewUserGroupService(repo),
 		Grants:        app.NewGrantService(repo),
 		Export:        app.NewExportService(repo, sealer),

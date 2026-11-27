@@ -83,6 +83,11 @@ export const api = {
 
   // ---- M3: 用户与授权 ----
   users: () => req('/admin/api/users') as Promise<UserRow[]>,
+  createUser: (providerType: string, externalId: string, display: string) =>
+    req('/admin/api/users', {
+      method: 'POST',
+      body: JSON.stringify({ provider_type: providerType, external_id: externalId, display }),
+    }),
   userDetail: (id: number) => req(`/admin/api/users/${id}`),
   deleteUser: (id: number) => req(`/admin/api/users/${id}`, { method: 'DELETE' }),
   userGrants: (id: number) => req(`/admin/api/users/${id}/grants`) as Promise<Grant[]>,
