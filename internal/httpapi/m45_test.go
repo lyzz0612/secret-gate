@@ -62,7 +62,7 @@ func TestUserGroupGrants(t *testing.T) {
 		e.api("PUT", fmt.Sprintf("/admin/api/user-groups/%d/members", ug.ID), map[string]any{"user_ids": []int64{}})
 		tok := e.jwtV1Token()
 		code, out := e.export(tok, "")
-		if code != 200 || !strings.Contains(out, `"secrets":{}`) {
+		if code != 200 || !strings.Contains(out, `"secrets":[]`) {
 			t.Errorf("移出后应空集 = %d %s", code, out)
 		}
 	})
@@ -78,7 +78,7 @@ func TestUserGroupGrants(t *testing.T) {
 		}
 		tok := e.jwtV1Token()
 		code, out := e.export(tok, "")
-		if code != 200 || !strings.Contains(out, `"secrets":{}`) {
+		if code != 200 || !strings.Contains(out, `"secrets":[]`) {
 			t.Errorf("删组后应空集 = %d %s", code, out)
 		}
 	})

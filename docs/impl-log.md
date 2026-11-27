@@ -246,3 +246,24 @@
 
 - 「预配置 github_oidc 用户」能力随旧 Create 一起移除：实例型用户只能等首次敲门自动登记（首跑无授权空集，补授权重跑即可）——selftest workflow 的指引文案已同步
 - 工作区遗留：根目录 dev.bat 与 scripts/dev.bat 在 HEAD 里并存（历史提交所致），本次顺手删根目录那份（scripts\dev.bat 为唯一入口），单独提交
+
+---
+
+## 2026-11-27 · 导出改数组形态（跨组同名 key 共存）
+
+### 缺陷（用户发现）
+
+导出是 `map[key]value`，跨组同名 key（如 prod/dev 各一条 `API_KEY`）在 map 迭代的随机顺序里**静默丢一条**，且每次结果不同。
+
+### 改动（用户拍板：JSON 数组 + env 撞名 422）
+
+- `Export` 返回 `[]SecretEntry{Group, Key, Value}`（group path + key 字典序，确定性）；单条授权与组授权指向同一条密钥时按 `(group, key)` 去重，**同名跨组保留**
+- guest：数组照列（value 全 fake_value，masked:true）——「每个组有哪些 key」的完整清单，探测语义更完整
+- env 格式保持 `KEY=VALUE`，跨组同名 → 422 点名冲突分组（沿用「含换行值拒绝」的先例：env 装不下就明说）；`?group=` 过滤可消解
+- 空集 JSON 由 `{}` 变 `[]`（make 兜底，不会是 null）
+- selftest.yml 的 jq 取法改数组（`.secrets | map("\(.group)/\(.key)")`）
+
+### 验证
+
+- 新增 `TestExport_CrossGroupDup`：JSON 两条共存 + 排序、env 422 点名、`?group=` 消解、guest 完整清单两条假值
+- 全部用例空集断言 `{}` → `[]`；5 包 56 个测试函数全绿

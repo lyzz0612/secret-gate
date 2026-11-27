@@ -360,7 +360,7 @@ func (e *exportEnv) seed() (userID int64, groupID int64) {
 	jwt := mintJWT(e.t, e.key, e.kid, defaultClaims(e.issuer, e.aud))
 	v1tok := e.v1Token(e.authJWT(jwt))
 	code, out = e.export(v1tok, "")
-	if code != 200 || !strings.Contains(out, `"secrets":{}`) {
+	if code != 200 || !strings.Contains(out, `"secrets":[]`) {
 		e.t.Fatalf("首次敲门应 200 空集, got %d %s", code, out)
 	}
 	// 找到本次登记的 github 用户（按身份键，不数总数——调用方可能已有别的用户）
@@ -394,18 +394,25 @@ func TestExport_FullFlow(t *testing.T) {
 
 	tok := e.jwtV1Token()
 
-	t.Run("全量导出", func(t *testing.T) {
+	t.Run("全量导出（数组形态，带分组）", func(t *testing.T) {
 		code, out := e.export(tok, "")
 		if code != 200 {
 			t.Fatalf("= %d %s", code, out)
 		}
 		var r struct {
-			Secrets map[string]string `json:"secrets"`
+			Secrets []app.SecretEntry `json:"secrets"`
 			Masked  bool              `json:"masked"`
 		}
 		json.Unmarshal([]byte(out), &r)
-		if r.Secrets["OSS_KEY"] != "AKIA-EXPORT-TEST" || r.Secrets["ROOT_KEY"] != "ROOT-VAL" {
-			t.Errorf("secrets = %v", r.Secrets)
+		val := map[string]string{}
+		for _, s := range r.Secrets {
+			val[s.Group+"/"+s.Key] = s.Value
+		}
+		if val["minigames/prod/OSS_KEY"] != "AKIA-EXPORT-TEST" || val["minigames/ROOT_KEY"] != "ROOT-VAL" {
+			t.Errorf("secrets = %+v", r.Secrets)
+		}
+		if len(r.Secrets) != 2 {
+			t.Errorf("应 2 条, got %d", len(r.Secrets))
 		}
 		if r.Masked {
 			t.Errorf("normal 不应 masked")
@@ -497,7 +504,7 @@ func TestExport_TokenFailures(t *testing.T) {
 		// 重新敲门 → 重新登记 → 新票正常（无授权 = 空集）
 		tok2 := e.jwtV1Token()
 		code, out := e.export(tok2, "")
-		if code != 200 || !strings.Contains(out, `"secrets":{}`) {
+		if code != 200 || !strings.Contains(out, `"secrets":[]`) {
 			t.Errorf("重新登记后应 200 空集 = %d %s", code, out)
 		}
 	})
@@ -622,7 +629,7 @@ func TestExport_RevokeAndUserDelete(t *testing.T) {
 	}
 	tok := e.jwtV1Token()
 	code, out = e.export(tok, "")
-	if code != 200 || !strings.Contains(out, `"secrets":{}`) {
+	if code != 200 || !strings.Contains(out, `"secrets":[]`) {
 		t.Errorf("删授权后应空集 = %d %s", code, out)
 	}
 
@@ -635,7 +642,7 @@ func TestExport_RevokeAndUserDelete(t *testing.T) {
 	}
 	tok2 := e.jwtV1Token()
 	code, out = e.export(tok2, "")
-	if code != 200 || !strings.Contains(out, `"secrets":{}`) {
+	if code != 200 || !strings.Contains(out, `"secrets":[]`) {
 		t.Errorf("删用户后应重新登记且空集 = %d %s", code, out)
 	}
 }
@@ -774,8 +781,23 @@ func TestAppKeyFlow(t *testing.T) {
 		if code != 200 {
 			t.Fatalf("= %d %s", code, out)
 		}
-		if !strings.Contains(out, `"masked":true`) || !strings.Contains(out, `"OSS_KEY":"fake_value"`) {
-			t.Errorf("guest 应脱敏: %s", out)
+		var r struct {
+			Secrets []app.SecretEntry `json:"secrets"`
+			Masked  bool              `json:"masked"`
+		}
+		if err := json.Unmarshal([]byte(out), &r); err != nil {
+			t.Fatal(err)
+		}
+		if !r.Masked || len(r.Secrets) == 0 {
+			t.Fatalf("guest 应 masked 且非空: %s", out)
+		}
+		for _, s := range r.Secrets {
+			if s.Value != app.FakeValue {
+				t.Errorf("guest 值应全为假值: %+v", s)
+			}
+			if s.Group == "" {
+				t.Errorf("条目应带分组: %+v", s)
+			}
 		}
 		if strings.Contains(out, "AKIA-EXPORT-TEST") {
 			t.Errorf("guest 不应拿到真值: %s", out)
@@ -932,6 +954,102 @@ func TestTokenTTLSetting(t *testing.T) {
 			if code, _ := e.api("PUT", "/admin/api/settings", map[string]int{"token_ttl_minutes": bad}); code != 400 {
 				t.Errorf("ttl=%d 应 400", bad)
 			}
+		}
+	})
+}
+
+// 跨组同名 key：数组形态两条共存；env 格式 422 点名冲突组；?group= 过滤消解。
+// 回归背景：旧 map 形态按随机迭代顺序静默丢一条。
+func TestExport_CrossGroupDup(t *testing.T) {
+	e := newExportEnv(t)
+	e.createInstance("我的个人号", e.aud, []map[string]string{
+		{"field": "repository_owner", "pattern": "^lyzz0612$"},
+	})
+	_, _ = e.seed()
+
+	// minigames/prod 已有 OSS_KEY=AKIA-EXPORT-TEST（seed 建的）；再建 dev 子组放同名 key
+	code, out := e.api("POST", "/admin/api/groups", map[string]string{"path": "minigames/dev", "name": "开发"})
+	if code != 201 {
+		t.Fatalf("建 dev 组 = %d %s", code, out)
+	}
+	var dev struct {
+		ID int64 `json:"id"`
+	}
+	json.Unmarshal([]byte(out), &dev)
+	e.api("POST", fmt.Sprintf("/admin/api/groups/%d/secrets", dev.ID), map[string]string{"key": "OSS_KEY", "value": "AKIA-DEV-999"})
+
+	// seed 已给 github 用户授权父组 + normal
+	tok := e.jwtV1Token()
+
+	t.Run("JSON：两条同名共存且确定性排序", func(t *testing.T) {
+		code, out := e.export(tok, "")
+		if code != 200 {
+			t.Fatalf("= %d %s", code, out)
+		}
+		var r struct {
+			Secrets []app.SecretEntry `json:"secrets"`
+		}
+		if err := json.Unmarshal([]byte(out), &r); err != nil {
+			t.Fatal(err)
+		}
+		val := map[string]string{}
+		for _, s := range r.Secrets {
+			val[s.Group+"/"+s.Key] = s.Value
+		}
+		if val["minigames/prod/OSS_KEY"] != "AKIA-EXPORT-TEST" || val["minigames/dev/OSS_KEY"] != "AKIA-DEV-999" {
+			t.Errorf("同名 key 跨组应共存: %+v", r.Secrets)
+		}
+		// 字典序：dev 在 prod 前
+		if !(r.Secrets[0].Group == "minigames" && r.Secrets[1].Group == "minigames/dev") {
+			t.Errorf("排序应按 group 字典序: %+v", r.Secrets)
+		}
+	})
+
+	t.Run("env：跨组同名 422 点名冲突组", func(t *testing.T) {
+		code, out := e.export(tok, "?format=env")
+		if code != 422 {
+			t.Fatalf("= %d %s, 期望 422", code, out)
+		}
+		if !strings.Contains(out, "minigames/dev") || !strings.Contains(out, "minigames/prod") || !strings.Contains(out, "OSS_KEY") {
+			t.Errorf("错误应点名冲突 key 与分组: %s", out)
+		}
+	})
+
+	t.Run("env + ?group= 精确过滤消解冲突", func(t *testing.T) {
+		code, out := e.export(tok, "?format=env&group=minigames/prod")
+		if code != 200 || !strings.Contains(out, "OSS_KEY=AKIA-EXPORT-TEST") {
+			t.Errorf("= %d %s", code, out)
+		}
+	})
+
+	t.Run("guest 遇同名：数组两条假值，env 注释行", func(t *testing.T) {
+		_, out := e.api("GET", "/admin/api/users", nil)
+		var users []map[string]any
+		json.Unmarshal([]byte(out), &users)
+		for _, u := range users {
+			if u["provider_type"] == "github_oidc" {
+				e.setRole(int64(u["id"].(float64)), "guest")
+			}
+		}
+		code, out := e.export(tok, "")
+		if code != 200 || !strings.Contains(out, `"masked":true`) {
+			t.Fatalf("= %d %s", code, out)
+		}
+		var r struct {
+			Secrets []app.SecretEntry `json:"secrets"`
+		}
+		json.Unmarshal([]byte(out), &r)
+		n := 0
+		for _, s := range r.Secrets {
+			if s.Key == "OSS_KEY" {
+				n++
+				if s.Value != app.FakeValue {
+					t.Errorf("guest 同名条目也应是假值: %+v", s)
+				}
+			}
+		}
+		if n != 2 {
+			t.Errorf("guest 的完整清单应含两条 OSS_KEY, got %d: %s", n, out)
 		}
 	})
 }

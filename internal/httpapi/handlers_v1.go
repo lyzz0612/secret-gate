@@ -78,33 +78,41 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	groupPath := strings.TrimSpace(r.URL.Query().Get("group"))
-	secrets, masked, _, err := s.deps.Export.Export(r.Context(), *u, groupPath)
+	entries, masked, err := s.deps.Export.Export(r.Context(), *u, groupPath)
 	if err != nil {
 		mapErr(w, err)
 		return
 	}
 
 	if r.URL.Query().Get("format") == "env" {
-		keys := make([]string, 0, len(secrets))
-		for k := range secrets {
-			keys = append(keys, k)
+		// env 是扁平 namespace，装不下跨组同名 key：拒绝并点名冲突组
+		// （与「含换行的值无法用 env 格式导出」同一先例——装不下就明说，不静默丢）
+		owners := map[string][]string{}
+		for _, e := range entries {
+			owners[e.Key] = append(owners[e.Key], e.Group)
 		}
-		sort.Strings(keys)
+		for k, gs := range owners {
+			if len(gs) > 1 {
+				sort.Strings(gs)
+				writeErr(w, http.StatusUnprocessableEntity, "密钥 "+k+" 在多个分组出现（"+
+					strings.Join(gs, ", ")+"），env 格式无法承载同名 key——用 ?group= 精确过滤")
+				return
+			}
+		}
 		var b strings.Builder
 		if masked {
 			// # 是 env 注释，source 无害；脚本可 grep 到被降级的信号
 			b.WriteString("# guest: values are masked\n")
 		}
-		for _, k := range keys {
-			v := secrets[k]
+		for _, e := range entries {
 			// env 行格式无法承载换行：含换行的值直接拒绝，避免静默截断
-			if strings.ContainsAny(v, "\r\n") {
-				writeErr(w, http.StatusUnprocessableEntity, "密钥 "+k+" 含换行，无法用 env 格式导出")
+			if strings.ContainsAny(e.Value, "\r\n") {
+				writeErr(w, http.StatusUnprocessableEntity, "密钥 "+e.Key+" 含换行，无法用 env 格式导出")
 				return
 			}
-			b.WriteString(k)
+			b.WriteString(e.Key)
 			b.WriteByte('=')
-			b.WriteString(v)
+			b.WriteString(e.Value)
 			b.WriteByte('\n')
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -113,7 +121,7 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"secrets": secrets, "masked": masked})
+	writeJSON(w, http.StatusOK, map[string]any{"secrets": entries, "masked": masked})
 }
 
 // bearerToken 提取 Authorization: Bearer <token>。
