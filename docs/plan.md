@@ -23,7 +23,7 @@
 | G6 | 授权按身份/身份组 → 密钥组/单密钥 | 并集语义，无可读性歧义 |
 | G7 | 通用侧边栏管理后台 | 侧栏分组 + 二级页 + 抽屉，操作不下沉到主页 |
 | G8 | 界面按 frontend-design 技能设计 | 明确的风格方向，不是默认的 AI 后台长相 |
-| G9 | 类型与实例分离 | 同类型可建多个实例（不同 audience / 准入范围） |
+| G9 | 类型与实例分离 | 同类型可建多个实例（不同准入范围） |
 | G10 | 库里没有明文 | 只拿走 `app.db` 解不开任何密钥；明文只在内存与主动解密的那次响应里 |
 
 ### 非目标（明确不做）
@@ -106,7 +106,7 @@
 
 | | 类型（PluginType） | 实例（Provider） |
 |---|---|---|
-| 是什么 | 一段代码：怎么验、有哪些配置字段 | 一份数据：一个 audience、一套准入正则 |
+| 是什么 | 一段代码：怎么验、有哪些配置字段 | 一份数据：一份配置、一套准入正则 |
 | 从哪来 | 加 Go 文件 + 一行注册 | 后台"接入"页点新建 |
 | 能改吗 | 不能，编译进去的 | 随便加、改、删 |
 | 数量 | 一个类型 | 同类型可以有多个 |
@@ -128,7 +128,7 @@ PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 5000;
 
--- 实例元信息：schema 版本、实例 ID、audience
+-- 实例元信息：schema 版本
 CREATE TABLE meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -250,7 +250,7 @@ type ClaimField struct {
     Example string // 'lyzz0612'
 }
 
-// 类型级验真后的中间产物：claims 已解析，但还没核对 audience
+// 类型级验真后的中间产物：claims 已解析，但还没核对实例配置
 type Parsed struct {
     Claims map[string]string // 全部字符串化，供正则匹配
     ExtID  string            // 稳定唯一，e.g. strconv.FormatInt(repoID, 10)
@@ -268,14 +268,14 @@ type PluginType interface {
     // 类型级：验真（签名 / iss / exp）。cfg 是这次请求所用实例的配置
     // （OIDC 插件从中读 issuer；内置型传 nil），每个实例调一次，公钥按 URL 缓存
     Parse(ctx context.Context, req *http.Request, cfg map[string]any) (*Parsed, error)
-    // 实例级：拿 Parsed + 该实例的配置核对（audience 等），每个实例调用一次
+    // 实例级：拿 Parsed + 该实例的配置核对（issuer / jwks 等），每个实例调用一次
     Accept(ctx context.Context, p *Parsed, cfg map[string]any) error
 }
 ```
 
 注册：`internal/app/plugins/registry.go` 里一张 `map[string]PluginType`，加插件 = 一个文件 + 一行。
 
-**为什么拆成 `Parse` + `Accept` 两步**：`Parse` 里要验 RSA 签名（~50µs）和拉 JWKS，一个请求只该做一次；`Accept` 只比 audience 之类的配置项，每个实例各做一次，成本可忽略。这样加三个实例不会让验签成本翻三倍。
+**为什么拆成 `Parse` + `Accept` 两步**：`Parse` 里要验 RSA 签名（~50µs）和拉 JWKS；`Accept` 用该实例的配置（issuer、公钥地址）核对配置项，每个实例各做一次，成本可忽略。
 
 ### 5.2 为什么不做 Go 动态插件
 
@@ -329,7 +329,7 @@ runner                    服务                          GitHub
   │                                 │ 2 Parse 一次：JWKS + 验签 + iss/exp
   │                                 │   拉 JWKS（缓存 1h）──────────────▶│
   │                                 │ 3 该类型的 enabled 实例按 id 逐个：
-  │                                 │      Accept(aud) → rules(AND)
+  │                                 │      Accept(cfg) → rules(AND)
   │                                 │      第一个全过的胜出
   │                                 │ 4 一个没过 → 403
   │                                 │ 5 resolveUser(类型, external_id)
@@ -352,7 +352,7 @@ runner                    服务                          GitHub
 - 后台「用户」页顶部出现"待批准 (N)"，侧栏那条同时开始呼吸
 - 这样你能看到"有东西在敲门"，而不是被静默拒绝
 
-**为什么建而不是直接拒**：如果只拒绝不记录，`audience` 配错那天你会一头雾水。建 pending 记录 + 界面上显眼提示，是自用工具最实用的排障手段。
+**为什么建而不是直接拒**：如果只拒绝不记录，准入规则配错那天你会一头雾水。建 pending 记录 + 界面上显眼提示，是自用工具最实用的排障手段。
 
 ### 6.3 被拒记录
 
@@ -587,7 +587,8 @@ internal/
     secrets.go  grants.go  users.go  instances.go
     plugins/                    插件类型（代码）
       registry.go               map[string]PluginType
-      github_oidc/              Parse：JWKS + 验签 + claims；Accept：核对 aud
+      github_oidc/              Parse：discovery + 验签 + claims；Accept：空实现
+      gitlab_oidc/ vercel_oidc/ Parse：用实例 issuer 验签；身份键分别为 host#project_id / project_id
       password/                 Parse：表单口令；Accept：空实现
   infra/
     sqlite/                     migrate.go + repo.go（手写 SQL，约 20 条语句）
@@ -703,7 +704,7 @@ services:
     environment:
       MASTER_KEY: "请替换为至少32字节的随机串"   # 必须改。与 app.db 同等重要，单独备份
       ADMIN_PASSWORD: "请替换为后台登录口令"     # 必须改，改了老会话全部失效
-      BASE_URL: "https://secrets.example.com"   # 必须改，用于生成 audience 与后台展示
+      BASE_URL: "https://secrets.example.com"   # 必须改，后台展示与文档示例用（不参与判定）
     volumes:
       - ./data:/app/data
     healthcheck:
@@ -820,7 +821,7 @@ jobs:
 | `domain/rule.go` | 锚定、AND、字段缺失、正则非法、超长、数字字段 | 40+ 表驱动用例 |
 | `domain/authz.go` | 个人/组并集、组路径子孙、删授权后的空集、pending 用户 | 30+ 表驱动用例 |
 | 实例择优 | 同类型多实例、只命中其一、全都不过、实例 `enabled=0`、类型不匹配、同仓库被两实例接纳只建一个用户 | 10+ |
-| OIDC 验签 | 假 JWKS（httptest 生成 RSA 对）：签名错、alg=none、alg=HS256、iss 错、aud 错、exp 过期、nbf 未来、未知 kid、缺 repository_id、新旧 sub 格式 | 12+ |
+| OIDC 验签 | 假 JWKS（httptest 生成 RSA 对）：签名错、alg=none、alg=HS256、iss 错、规则不过、exp 过期、nbf 未来、未知 kid、缺 repository_id、新旧 sub 格式 | 12+ |
 | 两个入口 | CI 令牌打后台 403、会话打 `/v1` 403、pending 用户 403 | 3 |
 | 删除路径 | 删用户 / 用户组 / 密钥组 / 单条密钥 / Provider 实例，授权与成员关系同步清理；删实例不动用户 | 6 |
 | 加密 | salt 错位拒绝、nonce 不重复、**改项目/密钥名后仍能解密**、主密钥不匹配时哨兵拦截启动、列表接口不含明文、reveal 需会话 | 6 |
@@ -860,12 +861,13 @@ jobs:
 | 10 | Provider 实例与插件类型分开 | `providers` 变实例表（有 id、可多个），类型留在代码；新增 3.2④、5.1 两步接口 |
 | 11 | 要有用户管理 | 用户列表/详情/批准/删除 + 用户组，独立页面 |
 | 12 | 密钥必须加密入库，密钥来自环境变量；后台与授权方看到的是解密后明文 | 11 节整体重写；`secrets` 加 `aad_salt`；新增哨兵自检与 reveal 接口 |
-| 13 | github_oidc 实例**不配置** audience/issuer：issuer 是代码级常量（GHES 走派生插件），`aud` 是普通 claim 由准入规则匹配 | 插件 ConfigFields 清零、ClaimFields 增加 aud、`aud` 建议作为第一条规则（防重放）；配置键严格校验（未声明的键拒绝） |
+| 13 | github_oidc 实例**不配置** audience/issuer：issuer 是代码级常量（GHES 走派生插件），`aud` 只是普通 claim | 插件 ConfigFields 清零、ClaimFields 保留 aud（可匹配，但**不作默认门槛**）；配置键严格校验（未声明的键拒绝） |
 | 14 | **去掉待批准机制**：过准入规则即自动登记，无授权 = 空集 200 | 删 status 状态机（列恒 active）、批准 API、pending 计数与全部 UI；准入规则就是唯一门槛 |
 | 15 | **实例名即接入标识**（不新增 key 字段）：CI 侧 `POST /v1/auth/{name}` 指名实例 | 新增路由；名字加字符集 + 唯一性校验；改名等于换标识；无标识路径保留"逐实例择优" |
 | 16 | **issuer 由插件声明来源**：GitHub 写死常量，GitLab / Vercel 由实例配置 | 插件契约 `Parse(ctx, req, cfg)`；公钥走 OIDC discovery；只向管理员配置过的 issuer 拉 JWKS（令牌里的 iss 只用来比对） |
 | 17 | **新增 gitlab_oidc / vercel_oidc**：GitLab 身份键 `<issuer host>#<project_id>`，Vercel 用 `project_id` | 三个 OIDC 类型共用 `internal/infra/oidc`；`sub` 不当身份键；Vercel 默认 `aud` 是 `https://vercel.com/<team>` |
 | 18 | **实例级自动登记**：`default_role` + 多组 `auto_group_ids`，只在首次登记生效，不做"重新套用"；删组前校验引用（409 点名） | schema v3；建用户与入组同一事务；实例改动只影响新身份 |
+| 19 | **区分维度只有实例**：`aud` 不作为门槛，也不要求默认配一条 aud 规则 | 平台侧仍必须给一个 audience 值（GitHub / GitLab 的硬性要求），服务端不校验；README / plan 不再建议 aud 规则；实例规则以项目 / 分支 / 事件为准 |
 
 ---
 
@@ -899,7 +901,7 @@ go run ./cmd/vaultd -addr 127.0.0.1:8788
 |---|---|
 | 一句话 | 让 GitHub Actions 凭 OIDC 取密钥，仓库里不存长期凭据 |
 | 30 秒上手 | 一段 compose，两个必须改的变量 |
-| 接入第一个仓库 | 完整 workflow 片段 + audience 怎么填 |
+| 接入第一个仓库 | 完整 workflow 片段 + 实例名怎么用 |
 | 概念 | 身份 / 准入 / 授权 三层，配那张流程图 |
 | 插件 | 内置两个，怎么写第三个（一个文件 + 一行注册） |
 | 部署 | 1Panel 反代 + 数据目录 + 升级 |

@@ -71,7 +71,9 @@ scripts\dev.bat
 
 ## 接入第一个仓库
 
-后台「接入」页建一个实例：**实例名就是接入标识**，CI 侧用它指名实例（`POST /v1/auth/{实例名}`）。GitHub Actions 无配置项；GitLab / Vercel 填 `issuer`（GitLab 实例地址 / Vercel 的 `https://oidc.vercel.com/<team>`）。准入规则建议：`aud` = 你的域名、`repository_owner`（GitHub）或 `project_id`（GitLab / Vercel），GitLab 上再加 `ref_protected=true` 与 `pipeline_source` 白名单。
+后台「接入」页建一个实例：**实例名就是接入标识，也是唯一的区分维度**——CI 侧用它指名实例（`POST /v1/auth/{实例名}`），服务端按名字取该实例的 issuer 验签、只跑这条实例的规则。GitHub Actions 无配置项；GitLab / Vercel 填 `issuer`（GitLab 实例地址 / Vercel 的 `https://oidc.vercel.com/<team>`）。准入规则建议：`repository_owner`（GitHub）或 `project_id`（GitLab / Vercel），GitLab 上再加 `ref_protected=true` 与 `pipeline_source` 白名单。
+
+`aud`（audience）不是门槛，不用配规则：三个平台都要求调用方在要令牌时给一个 audience 值，但 secret-gate 只认实例，不校验它。
 
 ```yaml
 jobs:
@@ -84,6 +86,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: 载入密钥
         run: |
+          # audience 是平台要求的参数，值随你填（secret-gate 不校验它）
           TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://secrets.example.com" | jq -r .value)
           # 第一跳：OIDC 令牌换短期 token（默认 2 分钟寿命）；github-me 是实例名
@@ -103,7 +106,7 @@ jobs:
 **GitLab CI / Vercel** 走同一个第一跳，只是令牌来源不同：
 
 ```yaml
-# .gitlab-ci.yml
+# .gitlab-ci.yml：aud 是 GitLab 要求的字段，值随你填（服务端不校验）
 deploy:
   id_tokens:
     SG_TOKEN:
@@ -114,14 +117,14 @@ deploy:
 ```
 
 ```ts
-// Vercel 构建或 Function 里
+// Vercel 构建或 Function 里（VERCEL_OIDC_TOKEN 自带 aud，无需关心）
 const v1 = await fetch('https://secrets.example.com/v1/auth/vercel-acme', {
   method: 'POST',
   headers: { Authorization: `Bearer ${process.env.VERCEL_OIDC_TOKEN}` },
 }).then((r) => r.json())
 ```
 
-注意 Vercel 的默认 `aud` 是 `https://vercel.com/<team>`（要绑自己的域名得在 Vercel 侧做一次 audience 交换）；GitLab 的 `project_id` 才是稳定身份键，`sub` 可被项目改配置，别拿它当键。
+GitLab 的 `project_id` 才是稳定身份键（`sub` 可被项目改配置，别拿它当键）；Vercel 用 `project_id` + `environment` 卡环境。
 
 **本仓库自带「Secret Gate 自测」workflow**（Actions 页手动触发，地址写死 `https://secret-gate.skyup.top`）：打 healthz、取真 OIDC 令牌、走两跳换票、调 `/v1/export`，失败信息会指明是部署、验签、准入、授权还是分级的问题。非 OIDC 调用方在「用户」页建 **AppKey / 账号密码** 用户（`X-App-Key` 头或 Basic auth 走同一个 `/v1/auth`），凭证加密入库、随时可查看与轮换。
 

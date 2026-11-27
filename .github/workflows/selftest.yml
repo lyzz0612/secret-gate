@@ -82,7 +82,7 @@ jobs:
               exit 1
               ;;
             403)
-              echo "::error::换票 403 身份未被接受——准入规则没过。检查后台实例规则是否覆盖：aud=^$AUDIENCE\$、repository_owner=^lyzz0612\$、event_name 含 workflow_dispatch"
+              echo "::error::换票 403 身份未被接受——准入规则没过。检查后台实例规则是否覆盖：repository_owner=^lyzz0612\$、event_name 含 workflow_dispatch（aud 不作门槛，不用配）"
               exit 1
               ;;
             *)

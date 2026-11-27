@@ -1,5 +1,25 @@
 # 实施日志
 
+## 2026-11-27 · aud 不再作为门槛（用户裁定：只按实例区分）
+
+### 决定
+
+区分维度只有实例：`POST /v1/auth/{实例名}` 决定用哪条实例，实例里的准入规则决定放不放行。
+`aud` 只是令牌里的普通 claim —— **不校验它**，也不再建议配一条 aud 规则。
+
+### 改动
+
+- 文档：README 的规则建议与 CI 片段注释；plan.md 决策 13 改写、新增决策 19，以及 §6.4 / 代码分层 / 测试策略里的 aud 措辞
+- 自测 workflow 的 403 提示改成 `repository_owner` / `event_name`（原来提示 aud）
+- 本地实例 `GitHub Actions` → `github-actions`（同名带空格无法作为接入标识），并删掉那条 aud 规则；现存规则 = `repository_owner` + `event_name`
+
+### 代价（已接受）
+
+GitHub / GitLab 取令牌时仍然必须给一个 audience 值（平台硬性要求），只是服务端不再比对它：
+令牌不再被绑定"只给 secret-gate 用"。平台侧的参数保持原样即可，不影响接入。
+
+---
+
 ## 2026-11-27 · GitLab / Vercel 插件 + 接入标识 + 自动登记（schema v3）
 
 ### 需求（用户裁定）
