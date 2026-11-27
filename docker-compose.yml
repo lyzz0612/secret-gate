@@ -1,0 +1,20 @@
+services:
+  secret-gate:
+    build: .
+    # 镜像就绪后换成：
+    # image: ghcr.io/lyzz0612/secret-gate:latest
+    container_name: secret-gate
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8788:8788"
+    environment:
+      MASTER_KEY: "请替换为至少32字节的随机串"   # 必须改。与 app.db 同等重要，分开备份
+      ADMIN_PASSWORD: "请替换为后台登录口令"     # 必须改，改了老会话全部失效
+      # BASE_URL: "https://secrets.example.com" # M3 用于 audience 与接入片段生成
+    volumes:
+      - ./data:/app/data        # 数据落编排目录子目录，不用 named volume
+    healthcheck:
+      test: ["CMD", "/vaultd", "-healthcheck"]
+      interval: 30s
+      timeout: 3s
+      retries: 3

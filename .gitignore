@@ -1,0 +1,18 @@
+# 数据与产物
+data/
+bin/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# 前端
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep
+
+# IDE / 系统
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store

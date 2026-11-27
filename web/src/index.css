@@ -1,0 +1,146 @@
+@import "tailwindcss";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+/*
+  Secret Gate 视觉方向：工业仪表盘。
+  近黑底、荧光单一强调、等宽字体做主体、1px 分割线、零圆角。
+  全站唯一持续动效：侧栏"待批准"呼吸。
+*/
+
+@theme {
+  --color-bg: #0b0c0e;
+  --color-surface: #111419;
+  --color-surface2: #171b21;
+  --color-line: #22262d;
+  --color-line2: #2e333c;
+  --color-text: #e8eaed;
+  --color-muted: #8a929c;
+  --color-accent: #c9f24d;
+  --color-warn: #ffb020;
+  --color-danger: #ff5252;
+  --font-sans: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: "IBM Plex Mono", "PingFang SC", "Microsoft YaHei", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: #c9f24d33;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2e333c transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2e333c;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 标注层：等宽小型大写 */
+.mono-label {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 10px;
+  color: var(--color-muted);
+}
+
+/* 列表行入场：一次性，逐行 30ms */
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.row-in {
+  animation: row-in 0.28s cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+/* 待批准呼吸：全站唯一持续动效 */
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+.breathe {
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+/* 右侧抽屉 220ms */
+@keyframes drawer-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0.5;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.drawer-content {
+  animation: drawer-in 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.overlay-in {
+  animation: overlay-in 0.18s ease-out;
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.modal-content {
+  animation: modal-in 0.18s ease-out;
+}
+
+/* 聚焦：1px 荧光描边 */
+:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
