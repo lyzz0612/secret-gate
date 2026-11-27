@@ -1,4 +1,4 @@
--- Secret Gate schema v1
+-- Secret Gate schema v1（基线全量建表；v2 起的增量见 migration_v2.sql）
 -- 八张表：meta / users / user_groups / user_group_members / secret_groups / secrets / grants / providers
 -- 注意：没有 accounts 表，后台口令来自环境变量 ADMIN_PASSWORD。
 -- 注意：secrets 永远只存密文（AES-256-GCM + 每行独立 aad_salt）。

@@ -5,20 +5,23 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/lyzz0612/deploy-center/internal/app/plugins"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins/appkey"
 	"github.com/lyzz0612/deploy-center/internal/domain"
 )
 
-// UserService 用户管理：准入通过的身份自动登记；后台也可手动预建（测试与预配置）。
+// UserService 用户管理：内置型（appkey / password）由后台创建、凭证挂用户行；
+// 实例型（github_oidc）过准入自动登记。能读什么由授权决定，读真值还是假值由分级决定。
 type UserService struct {
 	repo     Repo
 	registry *plugins.Registry
+	creds    credentials
+	ts       func() string
 }
 
-func NewUserService(repo Repo, registry *plugins.Registry) *UserService {
-	return &UserService{repo: repo, registry: registry}
+func NewUserService(repo Repo, registry *plugins.Registry, seal Sealer) *UserService {
+	return &UserService{repo: repo, registry: registry, creds: credentials{seal: seal}, ts: func() string { return nowRFC3339() }}
 }
 
 func (s *UserService) List(ctx context.Context) ([]domain.User, error) {
@@ -29,33 +32,141 @@ func (s *UserService) Get(ctx context.Context, id int64) (*domain.User, error) {
 	return s.repo.UserByID(ctx, id)
 }
 
-// Create 后台手动建用户（预配置用）：真实请求来了按 (类型, 外部ID) 命中同一条记录。
-func (s *UserService) Create(ctx context.Context, providerType, externalID, display string) (domain.User, error) {
-	providerType = strings.TrimSpace(providerType)
-	externalID = strings.TrimSpace(externalID)
-	if providerType == "" || len(providerType) > 64 {
-		return domain.User{}, fmt.Errorf("%w: 类型必填且不超过 64 字符", ErrInvalid)
+// CreateUserReq 后台建内置型用户。Type 只能选内置类型（appkey / password）。
+type CreateUserReq struct {
+	Type       string // appkey | password
+	ExternalID string // appkey: 标识名；password: 用户名（Basic auth 用）
+	Display    string
+	Password   string // password 类型必填；appkey 忽略（自动生成）
+}
+
+// Create 后台建内置型用户，返回新用户与凭证明文（创建即可见；后台随时可 reveal）。
+// 默认 guest 级别——要真值需在用户详情里提级 normal。
+func (s *UserService) Create(ctx context.Context, req CreateUserReq) (domain.User, string, error) {
+	typ := strings.TrimSpace(req.Type)
+	req.ExternalID = strings.TrimSpace(req.ExternalID)
+	req.Display = strings.TrimSpace(req.Display)
+	req.Password = strings.TrimSpace(req.Password)
+
+	pt, ok := s.registry.Get(typ)
+	if !ok {
+		return domain.User{}, "", fmt.Errorf("%w: 未知插件类型 %q", ErrInvalid, typ)
 	}
-	if _, ok := s.registry.Get(providerType); !ok {
-		return domain.User{}, fmt.Errorf("%w: 未知插件类型 %q", ErrInvalid, providerType)
+	if !pt.Builtin() {
+		return domain.User{}, "", fmt.Errorf("%w: 类型 %q 是实例型（用户由准入自动登记，不手动创建）", ErrInvalid, typ)
 	}
-	if externalID == "" || len(externalID) > 128 {
-		return domain.User{}, fmt.Errorf("%w: 外部 ID 必填且不超过 128 字符", ErrInvalid)
+	if req.ExternalID == "" || len(req.ExternalID) > 128 {
+		return domain.User{}, "", fmt.Errorf("%w: 标识名必填且不超过 128 字符", ErrInvalid)
 	}
-	if display == "" {
-		display = externalID
+	if req.Display == "" {
+		req.Display = req.ExternalID
 	}
-	if len(display) > 128 {
-		return domain.User{}, fmt.Errorf("%w: 显示名超过 128 字符", ErrInvalid)
+	if len(req.Display) > 128 {
+		return domain.User{}, "", fmt.Errorf("%w: 显示名超过 128 字符", ErrInvalid)
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	return s.repo.CreateUser(ctx, domain.User{
-		ProviderType: providerType,
-		ExternalID:   externalID,
-		Display:      display,
+
+	plain := req.Password
+	if typ == "password" {
+		if plain == "" {
+			return domain.User{}, "", fmt.Errorf("%w: 口令必填", ErrInvalid)
+		}
+		if len(plain) > 256 {
+			return domain.User{}, "", fmt.Errorf("%w: 口令超过 256 字符", ErrInvalid)
+		}
+	} else if typ == "appkey" {
+		var err error
+		plain, _, err = appkey.Generate()
+		if err != nil {
+			return domain.User{}, "", fmt.Errorf("生成 appkey: %w", err)
+		}
+	}
+
+	u, err := s.saveCredential(ctx, domain.User{
+		ProviderType: typ,
+		ExternalID:   req.ExternalID,
+		Display:      req.Display,
 		Kind:         "machine",
-		CreatedAt:    now,
-	})
+		Role:         domain.RoleGuest,
+		CreatedAt:    s.ts(),
+	}, plain)
+	return u, plain, err
+}
+
+// saveCredential 加密凭证后落库（Create 与 Rotate 共用）。
+func (s *UserService) saveCredential(ctx context.Context, u domain.User, plain string) (domain.User, error) {
+	cipher, nonce, salt, err := s.creds.encrypt(plain)
+	if err != nil {
+		return domain.User{}, err
+	}
+	u.CredKind = u.ProviderType
+	u.CredLookup = appkey.HashKey(plain)
+	u.CredCipher, u.CredNonce, u.CredSalt = cipher, nonce, salt
+	return s.repo.CreateUser(ctx, u)
+}
+
+// SetRole 切换分级：guest（只读 key 名，导出值为固定假值）/ normal（真实值）。
+func (s *UserService) SetRole(ctx context.Context, id int64, role string) error {
+	if role != domain.RoleGuest && role != domain.RoleNormal {
+		return fmt.Errorf("%w: role 只能是 guest / normal", ErrInvalid)
+	}
+	if _, err := s.repo.UserByID(ctx, id); err != nil {
+		return err
+	}
+	return s.repo.UpdateUserRole(ctx, id, role)
+}
+
+// RevealCredential 解密用户行上的内置凭证（appkey / 口令明文）。
+func (s *UserService) RevealCredential(ctx context.Context, id int64) (string, error) {
+	u, err := s.repo.UserByID(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if u.CredKind == "" {
+		return "", fmt.Errorf("%w: 实例型用户没有凭证", ErrInvalid)
+	}
+	return s.creds.open(u)
+}
+
+// RotateCredential 轮换凭证：appkey 生成新随机 key；password 用给定新口令
+// （留空则随机生成）。返回新明文；旧值立即失效（lookup 被整体替换）。
+func (s *UserService) RotateCredential(ctx context.Context, id int64, newPassword string) (string, error) {
+	u, err := s.repo.UserByID(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if u.CredKind == "" {
+		return "", fmt.Errorf("%w: 实例型用户没有凭证", ErrInvalid)
+	}
+	newPassword = strings.TrimSpace(newPassword)
+	plain := newPassword
+	switch u.CredKind {
+	case "appkey":
+		var err error
+		plain, _, err = appkey.Generate()
+		if err != nil {
+			return "", fmt.Errorf("生成 appkey: %w", err)
+		}
+	case "password":
+		if plain == "" {
+			plain, err = appkey.RandomPassword()
+			if err != nil {
+				return "", fmt.Errorf("生成口令: %w", err)
+			}
+		}
+		if len(plain) > 256 {
+			return "", fmt.Errorf("%w: 口令超过 256 字符", ErrInvalid)
+		}
+	default:
+		return "", fmt.Errorf("%w: 未知凭证类型 %q", ErrInvalid, u.CredKind)
+	}
+	cipher, nonce, salt, err := s.creds.encrypt(plain)
+	if err != nil {
+		return "", err
+	}
+	if err := s.repo.UpdateUserCredential(ctx, id, u.CredKind, appkey.HashKey(plain), cipher, nonce, salt); err != nil {
+		return "", err
+	}
+	return plain, nil
 }
 
 // Delete 真删，连带清授权与组成员关系。该身份下次过准入会重新登记。

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/lyzz0612/deploy-center/internal/app/plugins"
+	"github.com/lyzz0612/deploy-center/internal/domain"
 )
 
 // DefaultIssuer GitHub 公有云 OIDC 签发者，代码写死。
@@ -62,6 +63,13 @@ func NewWithIssuer(issuer string) *Plugin {
 
 func (p *Plugin) Type() string  { return typeName }
 func (p *Plugin) Label() string  { return "GitHub Actions (OIDC)" }
+func (p *Plugin) Builtin() bool { return false }
+
+// FindUser 实例型插件不适用（用户由过准入后自动登记）。
+func (p *Plugin) FindUser(ctx context.Context, f plugins.UserFinder, p2 *plugins.Parsed) (*domain.User, error) {
+	return nil, nil
+}
+
 func (p *Plugin) Match(r *http.Request) bool {
 	tok := bearer(r)
 	return strings.Count(tok, ".") == 2

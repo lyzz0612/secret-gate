@@ -9,7 +9,11 @@ import (
 	"github.com/lyzz0612/deploy-center/internal/domain"
 )
 
-// ExportService /v1/export 的用例：按用户当前授权实时展开并解密。
+// FakeValue guest 用户导出的固定假值：key 名照列，值不可用。
+const FakeValue = "fake_value"
+
+// ExportService /v1/export 的用例：按用户当前授权实时展开。
+// normal 解密真值；guest 不解密，key 名照列、值一律 FakeValue。
 // 授权每次请求实时算，改完立刻生效，不缓存、不需重启。
 type ExportService struct {
 	repo Repo
@@ -20,20 +24,20 @@ func NewExportService(repo Repo, seal Sealer) *ExportService {
 	return &ExportService{repo: repo, seal: seal}
 }
 
-// Export 返回用户可见的密钥集合。
+// Export 返回用户可见的密钥集合与是否脱敏。
 // groupPath 非空时只导出该 path 及其子孙（用户无权则返回空集）。
-func (s *ExportService) Export(ctx context.Context, u domain.User, groupPath string) (map[string]string, int, error) {
+func (s *ExportService) Export(ctx context.Context, u domain.User, groupPath string) (map[string]string, bool, int, error) {
 	groupIDs, err := s.repo.UserGroupIDs(ctx, u.ID)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, 0, err
 	}
 	grants, err := s.repo.GrantsForSubjects(ctx, u.ID, groupIDs)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, 0, err
 	}
 	allGroups, err := s.repo.ListGroups(ctx)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, 0, err
 	}
 
 	subj := domain.Subject{UserID: u.ID, GroupIDs: groupIDs}
@@ -65,6 +69,7 @@ func (s *ExportService) Export(ctx context.Context, u domain.User, groupPath str
 		visibleGroupIDs = filtered
 	}
 
+	masked := u.Role != domain.RoleNormal
 	out := map[string]string{}
 	exported := 0
 
@@ -72,10 +77,15 @@ func (s *ExportService) Export(ctx context.Context, u domain.User, groupPath str
 	for gid := range visibleGroupIDs {
 		metas, err := s.repo.ListSecrets(ctx, gid)
 		if err != nil {
-			return nil, 0, err
+			return nil, false, 0, err
 		}
 		for _, m := range metas {
 			if _, dup := out[m.Key]; dup {
+				continue
+			}
+			if masked {
+				out[m.Key] = FakeValue
+				exported++
 				continue
 			}
 			if v, ok := s.decrypt(ctx, gid, m.Key); ok {
@@ -94,6 +104,11 @@ func (s *ExportService) Export(ctx context.Context, u domain.User, groupPath str
 		if _, dup := out[b.Key]; dup {
 			continue
 		}
+		if masked {
+			out[b.Key] = FakeValue
+			exported++
+			continue
+		}
 		// 该条密钥所在组不在可见集合里也导出（授权到了单条密钥本身）
 		if v, ok := s.openBlob(b); ok {
 			out[b.Key] = v
@@ -107,10 +122,10 @@ func (s *ExportService) Export(ctx context.Context, u domain.User, groupPath str
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	log.Printf("export user=%d(%s:%s) groups=%d grants=%d out=%d keys=%v",
-		u.ID, u.ProviderType, u.ExternalID, len(visibleGroupIDs), len(grants), exported, keys)
+	log.Printf("export user=%d(%s:%s) role=%s masked=%v groups=%d grants=%d out=%d keys=%v",
+		u.ID, u.ProviderType, u.ExternalID, u.Role, masked, len(visibleGroupIDs), len(grants), exported, keys)
 
-	return out, exported, nil
+	return out, masked, exported, nil
 }
 
 func (s *ExportService) decrypt(ctx context.Context, groupID int64, key string) (string, bool) {

@@ -1,6 +1,6 @@
-// Package password 是账号口令认证插件类型：给非 GitHub 的调用方
-// （其他 CI、脚本、人）用 Basic auth 取密钥。实例配置 username + password，
-// 准入规则照常可匹配 username。凭证只做常量时间比对，绝不落日志。
+// Package password 是内置的账号口令用户类型：后台创建用户（username + 口令），
+// 凭证加密挂在用户行上，调 /v1/auth 用 Basic auth 换短期 token。
+// 没有 Provider 实例；口令只做常量时间比对，绝不落日志。
 package password
 
 import (
@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/lyzz0612/deploy-center/internal/app/plugins"
+	"github.com/lyzz0612/deploy-center/internal/domain"
 )
 
 const (
@@ -29,37 +30,21 @@ var _ plugins.PluginType = (*Plugin)(nil)
 // New 返回账号口令插件。
 func New() *Plugin { return &Plugin{} }
 
-func (p *Plugin) Type() string  { return typeName }
-func (p *Plugin) Label() string { return "账号口令 (Basic Auth)" }
+func (p *Plugin) Type() string   { return typeName }
+func (p *Plugin) Label() string  { return "账号口令 (Basic Auth)" }
+func (p *Plugin) Builtin() bool  { return true }
 
 func (p *Plugin) Match(r *http.Request) bool {
 	return basicUserPass(r) != nil
 }
 
+// ConfigFields 内置类型没有实例配置（凭证在用户行上，由后台用户管理维护）。
 func (p *Plugin) ConfigFields() []plugins.Field {
-	return []plugins.Field{
-		{
-			Key:      "username",
-			Label:    "用户名",
-			Help:     "调用方在 Basic auth 里用的用户名",
-			Type:     "text",
-			Required: true,
-		},
-		{
-			Key:      "password",
-			Label:    "口令",
-			Help:     "调用方在 Basic auth 里用的口令；只做常量时间比对",
-			Type:     "text",
-			Required: true,
-			Secret:   true,
-		},
-	}
+	return nil
 }
 
 func (p *Plugin) ClaimFields() []plugins.ClaimField {
-	return []plugins.ClaimField{
-		{Key: "username", Label: "用户名", Example: "ci-runner"},
-	}
+	return nil
 }
 
 func basicUserPass(r *http.Request) *[2]string {
@@ -96,12 +81,17 @@ func (p *Plugin) Parse(ctx context.Context, r *http.Request) (*plugins.Parsed, e
 	}, nil
 }
 
-// Accept 常量时间比对用户名与口令。
+// FindUser 按用户名定位用户行（FindUser 语义：没找到返回 nil, nil）。
+func (p *Plugin) FindUser(ctx context.Context, f plugins.UserFinder, parsed *plugins.Parsed) (*domain.User, error) {
+	return f.UserByKey(ctx, typeName, parsed.ExtID)
+}
+
+// Accept 常量时间比对用户名与口令。cfg 来自用户行（app 层解密凭证后构造）。
 func (p *Plugin) Accept(ctx context.Context, parsed *plugins.Parsed, cfg map[string]any) error {
 	wantUser, _ := cfg["username"].(string)
 	wantPass, _ := cfg["password"].(string)
 	if wantUser == "" || wantPass == "" {
-		return errors.New("实例缺少 username / password 配置")
+		return errors.New("用户行缺少凭证配置")
 	}
 	if parsed.Claims["username"] != wantUser {
 		return fmt.Errorf("用户名不匹配")

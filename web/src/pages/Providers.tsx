@@ -38,6 +38,9 @@ export function ProvidersPage({ onChanged }: { onChanged: () => void }) {
     void load()
   }, [])
 
+  // 新建实例只可选实例型；内置类型（appkey/password）的凭证在用户行上，去「用户」页建
+  const instanceTypes = useMemo(() => types.filter((t) => !t.builtin), [types])
+
   const parseRules = (p: Provider): Rule[] => {
     try {
       return JSON.parse(p.rules_json) as Rule[]
@@ -114,7 +117,7 @@ export function ProvidersPage({ onChanged }: { onChanged: () => void }) {
       {editDrawer && (
         <ProviderDrawer
           state={editDrawer}
-          types={types}
+          types={instanceTypes}
           onClose={() => setEditDrawer(null)}
           onSaved={async () => {
             await load()

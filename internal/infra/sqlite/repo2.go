@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/lyzz0612/deploy-center/internal/app"
 	"github.com/lyzz0612/deploy-center/internal/domain"
@@ -99,15 +100,31 @@ func scanUser(row interface{ Scan(...any) error }) (*domain.User, error) {
 	var u domain.User
 	var sourceID sql.NullInt64
 	var lastSeen sql.NullString
-	if err := row.Scan(&u.ID, &u.ProviderType, &u.ExternalID, &u.Display, &u.Kind, &sourceID, &u.CreatedAt, &lastSeen); err != nil {
+	var credKind, credLookup sql.NullString
+	var credCipher, credNonce, credSalt []byte
+	if err := row.Scan(&u.ID, &u.ProviderType, &u.ExternalID, &u.Display, &u.Kind, &u.Role,
+		&sourceID, &u.CreatedAt, &lastSeen,
+		&credKind, &credLookup, &credCipher, &credNonce, &credSalt); err != nil {
 		return nil, err
 	}
 	u.SourceID = sourceID.Int64
 	u.LastSeenAt = lastSeen.String
+	u.Role = orDefault(u.Role, domain.RoleGuest)
+	u.CredKind = credKind.String
+	u.CredLookup = credLookup.String
+	u.CredCipher, u.CredNonce, u.CredSalt = credCipher, credNonce, credSalt
 	return &u, nil
 }
 
-const userCols = `id, provider_type, external_id, display, kind, source_id, created_at, last_seen_at`
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
+}
+
+const userCols = `id, provider_type, external_id, display, kind, role, source_id, created_at, last_seen_at,
+	cred_kind, cred_lookup, cred_cipher, cred_nonce, cred_salt`
 
 func (r *Repo) ListUsers(ctx context.Context) ([]domain.User, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY id DESC`)
@@ -155,10 +172,19 @@ func (r *Repo) CreateUser(ctx context.Context, u domain.User) (domain.User, erro
 	if u.SourceID != 0 {
 		sourceID = u.SourceID
 	}
+	var credKind, credLookup any
+	if u.CredKind != "" {
+		credKind = u.CredKind
+	}
+	if u.CredLookup != "" {
+		credLookup = u.CredLookup
+	}
 	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO users(provider_type, external_id, display, kind, status, source_id, created_at, last_seen_at)
-		 VALUES(?, ?, ?, ?, 'active', ?, ?, ?)`,
-		u.ProviderType, u.ExternalID, u.Display, u.Kind, sourceID, u.CreatedAt, u.LastSeenAt)
+		`INSERT INTO users(provider_type, external_id, display, kind, role, status, source_id, created_at, last_seen_at,
+			cred_kind, cred_lookup, cred_cipher, cred_nonce, cred_salt)
+		 VALUES(?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.ProviderType, u.ExternalID, u.Display, u.Kind, u.Role, sourceID, u.CreatedAt, u.LastSeenAt,
+		credKind, credLookup, u.CredCipher, u.CredNonce, u.CredSalt)
 	if err != nil {
 		if isUnique(err) {
 			return domain.User{}, fmt.Errorf("%w: 用户 %s:%s 已存在", app.ErrConflict, u.ProviderType, u.ExternalID)
@@ -169,9 +195,53 @@ func (r *Repo) CreateUser(ctx context.Context, u domain.User) (domain.User, erro
 	return u, nil
 }
 
+// UserByCredLookup 按 appkey 哈希索引命中内置用户行（命中即认证通过）。
+func (r *Repo) UserByCredLookup(ctx context.Context, lookup string) (*domain.User, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE cred_lookup = ?`, lookup)
+	u, err := scanUser(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: 无此凭证", app.ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user by cred lookup: %w", err)
+	}
+	return u, nil
+}
+
 func (r *Repo) TouchUser(ctx context.Context, id int64, now string) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE users SET last_seen_at = ? WHERE id = ?`, now, id)
 	return err
+}
+
+// UpdateUserRole 切换用户分级（guest / normal）。
+func (r *Repo) UpdateUserRole(ctx context.Context, id int64, role string) error {
+	res, err := r.db.ExecContext(ctx, `UPDATE users SET role = ? WHERE id = ?`, role, id)
+	if err != nil {
+		return fmt.Errorf("update user role: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("%w: 用户 %d 不存在", app.ErrNotFound, id)
+	}
+	return nil
+}
+
+// UpdateUserCredential 整体替换某用户的内置凭证（轮换：appkey 重新生成 / password 改口令）。
+func (r *Repo) UpdateUserCredential(ctx context.Context, id int64, kind, lookup string, cipher, nonce, salt []byte) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE users SET cred_kind = ?, cred_lookup = ?, cred_cipher = ?, cred_nonce = ?, cred_salt = ? WHERE id = ?`,
+		kind, lookup, cipher, nonce, salt, id)
+	if err != nil {
+		if isUnique(err) {
+			return fmt.Errorf("%w: 凭证哈希冲突（几乎不可能，请重试）", app.ErrConflict)
+		}
+		return fmt.Errorf("update user credential: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("%w: 用户 %d 不存在", app.ErrNotFound, id)
+	}
+	return nil
 }
 
 // DeleteUser 真删：事务里先清它的授权与组成员关系。
@@ -308,9 +378,11 @@ func (r *Repo) SetGroupMembers(ctx context.Context, groupID int64, userIDs []int
 
 // GroupMembers 组内成员（用户全量信息）。
 func (r *Repo) GroupMembers(ctx context.Context, groupID int64) ([]domain.User, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT u.id, u.provider_type, u.external_id, u.display, u.kind, u.source_id, u.created_at, u.last_seen_at
+	cols := strings.ReplaceAll(userCols, "\n\t", " ")
+	q := "SELECT u." + strings.ReplaceAll(cols, ", ", ", u.") + `
 		FROM user_group_members m JOIN users u ON u.id = m.user_id
-		WHERE m.group_id = ? ORDER BY u.id`, groupID)
+		WHERE m.group_id = ? ORDER BY u.id`
+	rows, err := r.db.QueryContext(ctx, q, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("group members: %w", err)
 	}

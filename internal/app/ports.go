@@ -50,8 +50,11 @@ type Repo interface {
 	ListUsers(ctx context.Context) ([]domain.User, error)
 	UserByID(ctx context.Context, id int64) (*domain.User, error)
 	UserByKey(ctx context.Context, typ, extID string) (*domain.User, error)
+	UserByCredLookup(ctx context.Context, lookup string) (*domain.User, error)
 	CreateUser(ctx context.Context, u domain.User) (domain.User, error)
 	TouchUser(ctx context.Context, id int64, now string) error
+	UpdateUserRole(ctx context.Context, id int64, role string) error
+	UpdateUserCredential(ctx context.Context, id int64, kind, lookup string, cipher, nonce, salt []byte) error
 	DeleteUser(ctx context.Context, id int64) error
 
 	// user groups

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/lyzz0612/deploy-center/internal/app"
 	"github.com/lyzz0612/deploy-center/internal/domain"
 )
 // ---------- 登录 / 会话 ----------
@@ -357,31 +358,42 @@ func (s *server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(us))
 	for _, u := range us {
-		out = append(out, map[string]any{
-			"id": u.ID, "provider_type": u.ProviderType, "external_id": u.ExternalID,
-			"display": u.Display, "kind": u.Kind,
-			"source_id": u.SourceID, "created_at": u.CreatedAt, "last_seen_at": u.LastSeenAt,
-		})
+		out = append(out, userDTO(u))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
+func userDTO(u domain.User) map[string]any {
+	return map[string]any{
+		"id": u.ID, "provider_type": u.ProviderType, "external_id": u.ExternalID,
+		"display": u.Display, "kind": u.Kind, "role": u.Role,
+		"cred_kind": u.CredKind,
+		"builtin":   u.CredKind != "",
+		"source_id": u.SourceID, "created_at": u.CreatedAt, "last_seen_at": u.LastSeenAt,
+	}
+}
+
+// handleCreateUser 建 appkey / 账号密码用户（内置型；实例型用户由准入自动登记）。
+// 响应带凭证明文（appkey / 口令，创建即可见，后台随时可 reveal）。
 func (s *server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ProviderType string `json:"provider_type"`
-		ExternalID   string `json:"external_id"`
-		Display      string `json:"display"`
+		Type       string `json:"type"`
+		ExternalID string `json:"external_id"`
+		Display    string `json:"display"`
+		Password   string `json:"password"`
 	}
 	if err := readJSON(w, r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	u, err := s.deps.Users.Create(r.Context(), body.ProviderType, body.ExternalID, body.Display)
+	u, plain, err := s.deps.Users.Create(r.Context(), app.CreateUserReq{
+		Type: body.Type, ExternalID: body.ExternalID, Display: body.Display, Password: body.Password,
+	})
 	if err != nil {
 		mapErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, u)
+	writeJSON(w, http.StatusCreated, map[string]any{"user": userDTO(u), "credential": plain})
 }
 
 func (s *server) handleGetUser(w http.ResponseWriter, r *http.Request) {
@@ -398,7 +410,7 @@ func (s *server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	grants, _ := s.deps.Users.GrantsOf(r.Context(), id)
 	groups, _ := s.deps.Users.GroupsOf(r.Context(), id)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user": u, "grants": grants, "user_groups": groups,
+		"user": userDTO(*u), "grants": grants, "user_groups": groups,
 	})
 }
 
@@ -413,6 +425,87 @@ func (s *server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSetUserRole 切换 guest / normal。
+func (s *server) handleSetUserRole(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	var body struct {
+		Role string `json:"role"`
+	}
+	if err := readJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.deps.Users.SetRole(r.Context(), id, body.Role); err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleRevealCredential 解密内置用户的凭证（appkey / 口令明文）。
+func (s *server) handleRevealCredential(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	plain, err := s.deps.Users.RevealCredential(r.Context(), id)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"value": plain})
+}
+
+// handleRotateCredential 轮换凭证：appkey 生成新 key；password 可带新口令（留空随机）。
+// 响应带新明文；旧值立即失效。
+func (s *server) handleRotateCredential(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := readJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	plain, err := s.deps.Users.RotateCredential(r.Context(), id, body.Password)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"value": plain})
+}
+
+// ---------- 运行时设置 ----------
+
+func (s *server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	ttl := s.deps.Settings.TokenTTL(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{"token_ttl_minutes": int(ttl.Minutes())})
+}
+
+func (s *server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		TokenTTLMinutes int `json:"token_ttl_minutes"`
+	}
+	if err := readJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.deps.Settings.SetTokenTTLMinutes(r.Context(), body.TokenTTLMinutes); err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *server) handleUserGrants(w http.ResponseWriter, r *http.Request) {

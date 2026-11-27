@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api'
 import type { Grant, Group, PluginType, UserRow } from '../types'
-import { Btn, Confirm, Drawer, ErrorText, Field, Modal, TextInput } from '../ui'
+import { Btn, Confirm, CopyBtn, Drawer, ErrorText, Field, Modal, TextInput, cn } from '../ui'
 
 export function UsersPage({ onChanged }: { onChanged: () => void }) {
   const [users, setUsers] = useState<UserRow[]>([])
@@ -25,11 +25,24 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
     void load()
   }, [])
 
+  const toggleRole = async (u: UserRow) => {
+    const role = u.role === 'normal' ? 'guest' : 'normal'
+    try {
+      await api.setUserRole(u.id, role)
+      await load()
+      onChanged()
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : '切换失败')
+    }
+  }
+
   return (
     <div className="mx-auto max-w-[1000px] px-8 py-6">
       <div className="mb-4 flex items-center gap-2">
         <div className="mono-label">USERS</div>
-        <div className="text-[12px] text-muted">过了准入规则的身份自动登记；能读什么由授权决定</div>
+        <div className="text-[12px] text-muted">
+          appkey / 账号密码用户在后台创建；实例型（GitHub OIDC）过准入自动登记；默认 guest 只能看 key 名
+        </div>
         <Btn variant="primary" className="ml-auto" onClick={() => setNewOpen(true)}>
           + 新建用户
         </Btn>
@@ -51,7 +64,7 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
       {users.length === 0 && (
         <div className="border border-line bg-surface px-6 py-10 text-center">
           <div className="mono-label">EMPTY</div>
-          <div className="mt-1 text-[12px] text-muted">还没有任何身份进来过</div>
+          <div className="mt-1 text-[12px] text-muted">还没有任何用户——建一个 appkey 用户开始接入</div>
         </div>
       )}
 
@@ -59,7 +72,7 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
         {users.map((u, i) => (
           <div
             key={u.id}
-            className="row-in grid grid-cols-[minmax(220px,1.5fr)_110px_150px] items-center gap-4 border-b border-line/60 px-4 last:border-0 hover:bg-surface2/40"
+            className="row-in grid grid-cols-[minmax(200px,1.5fr)_120px_90px_150px] items-center gap-4 border-b border-line/60 px-4 last:border-0 hover:bg-surface2/40"
             style={{ animationDelay: `${i * 30}ms` }}
           >
             <div className="flex items-center gap-2 py-2">
@@ -70,7 +83,21 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
                 </div>
               </div>
             </div>
-            <div className="font-mono text-[11px] text-muted">{u.kind}</div>
+            <div>
+              <button
+                className={cn(
+                  'mono-label border px-2 py-1 transition-colors',
+                  u.role === 'normal'
+                    ? 'border-accent/50 text-accent hover:bg-accent/10'
+                    : 'border-line text-muted hover:border-warn/50 hover:text-warn',
+                )}
+                title={u.role === 'normal' ? '点击降为 guest（导出变假值）' : '点击提为 normal（导出真值）'}
+                onClick={() => void toggleRole(u)}
+              >
+                {u.role === 'normal' ? '● normal' : '○ guest'}
+              </button>
+            </div>
+            <div className="font-mono text-[11px] text-muted">{u.builtin ? u.cred_kind : '自动登记'}</div>
             <div className="flex items-center justify-end gap-1 py-2">
               <Btn variant="ghost" className="h-7" onClick={() => setDetail(u)}>
                 详情 / 授权
@@ -124,13 +151,13 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
         }}
       >
         确定删除 <span className="font-mono text-warn">{delTarget?.display}</span>？
-        它的个人授权与组成员关系会一并删除。它下次过准入会重新登记。
+        它的个人授权与组成员关系会一并删除。实例型用户下次过准入会重新登记。
       </Confirm>
     </div>
   )
 }
 
-/* ---------- 新建用户（预配置 / 测试） ---------- */
+/* ---------- 新建用户（appkey / 账号密码） ---------- */
 
 function NewUserModal({
   open,
@@ -145,27 +172,48 @@ function NewUserModal({
   const [type, setType] = useState('')
   const [externalId, setExternalId] = useState('')
   const [display, setDisplay] = useState('')
+  const [password, setPassword] = useState('')
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
+  const [created, setCreated] = useState<{ user: UserRow; credential: string } | null>(null)
 
   useEffect(() => {
     if (!open) return
     setErr('')
+    setCreated(null)
     api
       .plugins()
       .then((ts) => {
-        setTypes(ts)
-        if (!type && ts.length > 0) setType(ts[0].type)
+        const builtin = ts.filter((t) => t.builtin)
+        setTypes(builtin)
+        if (!type && builtin.length > 0) setType(builtin[0].type)
       })
       .catch((e) => setErr(e instanceof ApiError ? e.message : '加载插件类型失败'))
   }, [open])
 
-  const isGithub = type === 'github_oidc'
+  const isPassword = type === 'password'
+
+  const submit = async () => {
+    setBusy(true)
+    setErr('')
+    try {
+      const out = await api.createUser(type, externalId.trim(), isPassword ? password : '', display.trim())
+      setCreated(out)
+      setExternalId('')
+      setDisplay('')
+      setPassword('')
+      await onCreated()
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : '创建失败')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
-    <Modal open={open} onOpenChange={onOpenChange} title="NEW USER" width={460}>
+    <Modal open={open} onOpenChange={onOpenChange} title="NEW USER" width={480}>
       <div className="space-y-4">
-        <Field label="插件类型">
+        <Field label="用户类型" hint="appkey / 账号密码是内置类型；GitHub OIDC 用户由工作流敲门自动登记">
           <select
             className="h-9 w-full border border-line bg-bg px-2 text-[12.5px] text-text focus:border-accent/70 focus:outline-none"
             value={type}
@@ -178,48 +226,53 @@ function NewUserModal({
             ))}
           </select>
         </Field>
-        <Field
-          label="外部 ID"
-          hint={
-            isGithub
-              ? '仓库的数字 repository_id（GitHub 仓库页 URL 或 API 可查；将来真实令牌敲门会按此键命中同一条记录）'
-              : '口令类实例配置的用户名'
-          }
-        >
+        <Field label={isPassword ? '用户名' : '标识名'} hint={isPassword ? '调用方 Basic auth 用的用户名' : '仅用于后台识别，不出现在请求里'}>
           <TextInput
             mono
             value={externalId}
-            placeholder={isGithub ? '987654321' : 'ci-runner'}
+            placeholder={isPassword ? 'ci-runner' : 'ci-app'}
             onChange={(e) => setExternalId(e.target.value)}
           />
         </Field>
-        <Field label="显示名（可选，留空取外部 ID）">
-          <TextInput value={display} placeholder={isGithub ? 'lyzz0612/minigames' : 'ci-runner'} onChange={(e) => setDisplay(e.target.value)} />
+        {isPassword && (
+          <Field label="口令" hint="加密入库；后台随时可查看与轮换">
+            <TextInput mono type="password" value={password} placeholder="••••••••" onChange={(e) => setPassword(e.target.value)} />
+          </Field>
+        )}
+        <Field label="显示名（可选，留空取标识名）">
+          <TextInput value={display} placeholder={isPassword ? 'ci-runner' : '构建机 A'} onChange={(e) => setDisplay(e.target.value)} />
         </Field>
         <div className="text-[11.5px] leading-5 text-muted">
-          建好后即可在「详情 / 授权」里配授权——适合在真实请求到来前预配置。
+          新用户默认 <span className="text-warn">guest</span>：能看到 key 名但导出值为固定假值；建好后去「详情 / 授权」配授权并按需提级 normal。
         </div>
         <ErrorText>{err}</ErrorText>
+
+        {created && (
+          <div className="border-l-2 border-accent bg-accent/5 px-4 py-3">
+            <div className="mono-label mb-1.5 text-accent">CREATED · 凭证已生成</div>
+            <div className="mb-2 text-[12px] text-muted">
+              {isPassword ? '口令（后台可随时查看 / 轮换）' : 'AppKey（后台可随时查看 / 轮换）'}：
+            </div>
+            <div className="flex items-center gap-2">
+              <code className="min-w-0 flex-1 truncate border border-line bg-bg px-3 py-2 font-mono text-[12px] text-text">
+                {created.credential}
+              </code>
+              <CopyBtn getText={() => created.credential} />
+            </div>
+            <div className="mt-2 text-[11.5px] leading-5 text-muted">
+              调用方用法：<code className="font-mono text-accent">
+                {isPassword ? `curl -u <用户名>:<口令> -X POST .../v1/auth` : `curl -H "X-App-Key: <key>" -X POST .../v1/auth`}
+              </code>
+            </div>
+          </div>
+        )}
+
         <div className="flex justify-end gap-2">
-          <Btn onClick={() => onOpenChange(false)}>取消</Btn>
+          <Btn onClick={() => onOpenChange(false)}>关闭</Btn>
           <Btn
             variant="primary"
-            disabled={busy || !type || !externalId.trim()}
-            onClick={async () => {
-              setBusy(true)
-              setErr('')
-              try {
-                await api.createUser(type, externalId.trim(), display.trim())
-                setExternalId('')
-                setDisplay('')
-                onOpenChange(false)
-                await onCreated()
-              } catch (e) {
-                setErr(e instanceof ApiError ? e.message : '创建失败')
-              } finally {
-                setBusy(false)
-              }
-            }}
+            disabled={busy || !type || !externalId.trim() || (isPassword && !password)}
+            onClick={() => void submit()}
           >
             {busy ? '创建中…' : '创建'}
           </Btn>
@@ -229,7 +282,7 @@ function NewUserModal({
   )
 }
 
-/* ---------- 用户详情抽屉：授权管理 ---------- */
+/* ---------- 用户详情抽屉：凭证管理 + 授权 ---------- */
 
 function UserDrawer({
   user,
@@ -243,6 +296,8 @@ function UserDrawer({
   const [grants, setGrants] = useState<Grant[]>([])
   const [groups, setGroups] = useState<Group[]>([])
   const [newTarget, setNewTarget] = useState('')
+  const [cred, setCred] = useState('')
+  const [rotating, setRotating] = useState(false)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -267,17 +322,69 @@ function UserDrawer({
     return `单条密钥 #${g.target_id}`
   }
 
+  const reveal = async () => {
+    setErr('')
+    try {
+      const out = await api.revealCredential(user.id)
+      setCred(out.value)
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : '查看失败')
+    }
+  }
+
+  const rotate = async () => {
+    setErr('')
+    setRotating(true)
+    try {
+      const out = await api.rotateCredential(user.id, '')
+      setCred(out.value)
+      await onChanged()
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : '轮换失败')
+    } finally {
+      setRotating(false)
+    }
+  }
+
   return (
     <Drawer open onOpenChange={(v) => !v && onClose()} title={`USER · ${user.display}`} width={520}>
       <div className="space-y-5">
         <div className="grid grid-cols-[110px_1fr] gap-x-4 gap-y-1.5 border border-line bg-bg px-4 py-3 font-mono text-[12px]">
           <span className="text-muted">类型</span>
           <span>{user.provider_type}</span>
-          <span className="text-muted">外部 ID</span>
+          <span className="text-muted">{user.builtin ? '标识' : '外部 ID'}</span>
           <span>{user.external_id}</span>
+          <span className="text-muted">分级</span>
+          <span className={user.role === 'normal' ? 'text-accent' : 'text-warn'}>{user.role}</span>
           <span className="text-muted">最近来访</span>
           <span>{user.last_seen_at || '—'}</span>
         </div>
+
+        {user.builtin && (
+          <div>
+            <div className="mono-label mb-2">凭证</div>
+            <div className="flex items-center gap-2">
+              <code className="min-w-0 flex-1 truncate border border-line bg-bg px-3 py-2 font-mono text-[12px] text-text">
+                {cred || '••••••••（点击查看）'}
+              </code>
+              <CopyBtn getText={() => cred} className={cred ? '' : 'pointer-events-none opacity-40'} />
+              <Btn variant="ghost" className="h-9" onClick={() => void reveal()}>
+                查看
+              </Btn>
+              <Btn
+                variant="ghost"
+                className="h-9 hover:text-danger"
+                disabled={rotating}
+                onClick={() => void rotate()}
+              >
+                {rotating ? '轮换中…' : '轮换'}
+              </Btn>
+            </div>
+            <div className="mt-1.5 text-[11px] text-muted">
+              轮换 = 生成全新凭证，旧值立即失效。{user.cred_kind === 'password' ? '留空自动生成随机口令。' : ''}
+            </div>
+          </div>
+        )}
 
         <div>
           <div className="mono-label mb-2">授权（个人）</div>

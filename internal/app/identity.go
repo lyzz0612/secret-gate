@@ -32,24 +32,28 @@ type Rejection struct {
 }
 
 // AuthOutcome 一次成功通过认证 + 准入的结果。
+// 内置型（appkey/password）：User 直接命中（凭证在用户行上，无需登记）。
+// 实例型（github_oidc）：User 为 nil，由 ResolveUser 自动登记。
 type AuthOutcome struct {
+	User     *domain.User
 	Instance domain.ProviderInstance
 	Parsed   *plugins.Parsed
 	Results  []domain.RuleResult
 }
 
-// IdentityService 认证编排：类型匹配 → Parse（每类型一次）→ 实例择优（Accept + 规则）。
+// IdentityService 认证编排：类型匹配 → Parse → 内置型直查用户行 / 实例型择优。
 type IdentityService struct {
 	repo     Repo
 	registry *plugins.Registry
+	creds    credentials
 	now      func() time.Time
 
 	mu         sync.Mutex
 	rejections []Rejection
 }
 
-func NewIdentityService(repo Repo, registry *plugins.Registry) *IdentityService {
-	return &IdentityService{repo: repo, registry: registry, now: time.Now}
+func NewIdentityService(repo Repo, registry *plugins.Registry, seal Sealer) *IdentityService {
+	return &IdentityService{repo: repo, registry: registry, creds: credentials{seal: seal}, now: time.Now}
 }
 
 func (s *IdentityService) recordRejection(r Rejection) {
@@ -91,8 +95,9 @@ func lastIndexByte(s string, b byte) int {
 	return -1
 }
 
-// Authenticate 走完整认证链。返回第一个通过的实例；
-// 没有任何实例通过 → ErrNotAdmitted（403），token 解析失败 → ErrTokenInvalid（401）。
+// Authenticate 走完整认证链。内置类型直查用户行（查到即通过）；
+// 实例类型遍历该类型的启用实例（Accept + 准入规则），返回第一个通过的实例。
+// 没有任何通过 → ErrNotAdmitted（403），token 解析失败 → ErrTokenInvalid（401）。
 func (s *IdentityService) Authenticate(ctx context.Context, r *http.Request) (*AuthOutcome, error) {
 	types := s.registry.MatchTypes(r)
 	if len(types) == 0 {
@@ -112,6 +117,18 @@ func (s *IdentityService) Authenticate(ctx context.Context, r *http.Request) (*A
 			return nil, fmt.Errorf("%w: %v", ErrTokenInvalid, err)
 		}
 		parsed.Type = typ.Type()
+
+		// 内置型：凭证挂用户行，没有实例。定位 + 比对。
+		if typ.Builtin() {
+			out, err := s.authBuiltin(ctx, typ, parsed, ip)
+			if err != nil {
+				return nil, err
+			}
+			if out != nil {
+				return out, nil
+			}
+			continue
+		}
 
 		// 该类型的启用实例按 id 顺序逐个试
 		var lastReason string
@@ -153,6 +170,57 @@ func (s *IdentityService) Authenticate(ctx context.Context, r *http.Request) (*A
 	return nil, fmt.Errorf("%w: %s", ErrNotAdmitted, lastNoInstanceReason(instances))
 }
 
+// authBuiltin 内置类型的用户行认证：FindUser 定位（appkey 按哈希索引命中即通过；
+// password 按用户名找行）→ 需要比对凭证的（password）解密后交给 Accept。
+// 返回 nil 表示该类型没通过（已记入被拒面板），调用方继续试下一类型。
+func (s *IdentityService) authBuiltin(ctx context.Context, typ plugins.PluginType, parsed *plugins.Parsed, ip string) (*AuthOutcome, error) {
+	u, err := typ.FindUser(ctx, builtinUserFinder{repo: s.repo}, parsed)
+	if err != nil {
+		return nil, err
+	}
+	reject := func(reason string) *AuthOutcome {
+		s.recordRejection(Rejection{
+			TS: s.now(), Type: typ.Type(), ExtID: parsed.ExtID, Display: parsed.Disp,
+			Instance: typ.Type(), Reason: reason, SourceIP: ip,
+		})
+		return nil
+	}
+	if u == nil {
+		return reject("凭证无效（无此用户或口令不匹配）"), nil
+	}
+	cfg := map[string]any{"username": u.ExternalID}
+	if len(u.CredCipher) > 0 {
+		plain, err := s.creds.open(u)
+		if err != nil {
+			return nil, err
+		}
+		cfg[u.CredKind] = plain
+	}
+	if err := typ.Accept(ctx, parsed, cfg); err != nil {
+		return reject("凭证无效（" + err.Error() + "）"), nil
+	}
+	return &AuthOutcome{User: u, Parsed: parsed}, nil
+}
+
+// builtinUserFinder 把 Repo 适配成 plugins.UserFinder（ErrNotFound → nil, nil）。
+type builtinUserFinder struct{ repo Repo }
+
+func (f builtinUserFinder) UserByKey(ctx context.Context, typ, extID string) (*domain.User, error) {
+	u, err := f.repo.UserByKey(ctx, typ, extID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	return u, err
+}
+
+func (f builtinUserFinder) UserByCredLookup(ctx context.Context, lookup string) (*domain.User, error) {
+	u, err := f.repo.UserByCredLookup(ctx, lookup)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	return u, err
+}
+
 func decodeRules(rulesJSON string) []domain.Rule {
 	var rules []domain.Rule
 	_ = json.Unmarshal([]byte(rulesJSON), &rules)
@@ -180,10 +248,16 @@ func lastNoInstanceReason(instances []domain.ProviderInstance) string {
 	return "全部实例拒绝"
 }
 
-// ResolveUser 找到或创建用户（过准入即自动登记，无待批准状态），并刷新 last_seen。
-// 用户身份键 = (类型, external_id)，与实例无关：同仓库被两个实例接纳也只有一个用户。
+// ResolveUser 找到或创建用户并刷新 last_seen。
+// 内置型（appkey/password）：Authenticate 已命中用户行，直接返回（后台不建就不存在）。
+// 实例型（github_oidc）：过准入即自动登记，无待批准状态；
+// 身份键 = (类型, external_id)，与实例无关：同仓库被两个实例接纳也只有一个用户。
 func (s *IdentityService) ResolveUser(ctx context.Context, out *AuthOutcome) (domain.User, bool, error) {
 	now := s.now().UTC().Format(time.RFC3339)
+	if out.User != nil {
+		_ = s.repo.TouchUser(ctx, out.User.ID, now)
+		return *out.User, false, nil
+	}
 	u, err := s.repo.UserByKey(ctx, out.Parsed.Type, out.Parsed.ExtID)
 	if err == nil {
 		_ = s.repo.TouchUser(ctx, u.ID, now)
@@ -197,6 +271,7 @@ func (s *IdentityService) ResolveUser(ctx context.Context, out *AuthOutcome) (do
 		ExternalID:   out.Parsed.ExtID,
 		Display:      out.Parsed.Disp,
 		Kind:         out.Parsed.Kind,
+		Role:         domain.RoleGuest, // 自动登记一律最小权限，要真值去后台提级
 		SourceID:     out.Instance.ID,
 		CreatedAt:    now,
 		LastSeenAt:   now,

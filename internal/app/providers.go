@@ -23,11 +23,12 @@ func NewProviderService(repo Repo, registry *plugins.Registry) *ProviderService 
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 
-// TypeSummary 给前端的类型元数据（配置字段 + 可匹配字段）。
+// TypeSummary 给前端的类型元数据（配置字段 + 可匹配字段 + 是否内置）。
 type TypeSummary struct {
-	Type         string           `json:"type"`
-	Label        string           `json:"label"`
-	ConfigFields []plugins.Field  `json:"config_fields"`
+	Type         string              `json:"type"`
+	Label        string              `json:"label"`
+	Builtin      bool                `json:"builtin"`
+	ConfigFields []plugins.Field     `json:"config_fields"`
 	ClaimFields  []plugins.ClaimField `json:"claim_fields"`
 }
 
@@ -53,6 +54,7 @@ func (s *ProviderService) ListTypes() []TypeSummary {
 		out = append(out, TypeSummary{
 			Type:         p.Type(),
 			Label:        p.Label(),
+			Builtin:      p.Builtin(),
 			ConfigFields: cfg,
 			ClaimFields:  claims,
 		})
@@ -78,7 +80,8 @@ func (s *ProviderService) List(ctx context.Context) ([]InstanceView, error) {
 	return out, nil
 }
 
-// Create 校验类型存在、必填配置齐全、规则可编译，然后落库。
+// Create 校验类型存在、非内置（内置型凭证挂用户行，没有实例）、必填配置齐全、
+// 规则可编译，然后落库。
 func (s *ProviderService) Create(ctx context.Context, typ, name string, config map[string]any, rules []domain.Rule) (domain.ProviderInstance, error) {
 	if err := validateName(name); err != nil {
 		return domain.ProviderInstance{}, err
@@ -86,6 +89,9 @@ func (s *ProviderService) Create(ctx context.Context, typ, name string, config m
 	pt, ok := s.registry.Get(typ)
 	if !ok {
 		return domain.ProviderInstance{}, fmt.Errorf("%w: 未知插件类型 %q", ErrInvalid, typ)
+	}
+	if pt.Builtin() {
+		return domain.ProviderInstance{}, fmt.Errorf("%w: %q 是内置用户类型——去「用户」页建用户，不建实例", ErrInvalid, typ)
 	}
 	configJSON, err := validateConfig(pt, config)
 	if err != nil {

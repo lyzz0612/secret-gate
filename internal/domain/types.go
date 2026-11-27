@@ -39,17 +39,34 @@ type Grant struct {
 	CreatedAt   string `json:"created_at"`
 }
 
+// 用户分级：guest 只能看到 key 名（导出值为固定假值），normal 拿真实值。
+const (
+	RoleGuest  = "guest"
+	RoleNormal = "normal"
+)
+
 // User 被认证的主体（机器或人），身份键 = (ProviderType, ExternalID)。
-// 过了准入规则即自动登记（没有待批准状态）；能读什么由授权决定。
+// 实例型（github_oidc）过准入即自动登记；内置型（appkey/password）由后台创建，
+// 凭证直接挂在这一行上。能读什么由授权决定，读真值还是假值由 Role 决定。
 type User struct {
 	ID           int64  `json:"id"`
 	ProviderType string `json:"provider_type"`
 	ExternalID   string `json:"external_id"`
 	Display      string `json:"display"`
 	Kind         string `json:"kind"`      // "machine" | "human"
-	SourceID     int64  `json:"source_id"` // 首次接纳它的实例
+	Role         string `json:"role"`      // guest | normal
+	SourceID     int64  `json:"source_id"` // 首次接纳它的实例（内置型恒 0）
 	CreatedAt    string `json:"created_at"`
 	LastSeenAt   string `json:"last_seen_at"`
+
+	// 内置型凭证（appkey / password）；实例型用户这些字段为零值。
+	// CredLookup 是 sha256(凭证) 的 hex：appkey 认证按它命中用户行（唯一索引）。
+	// 凭证明文 AES-GCM 加密存 CredCipher（后台可解密 reveal）。JSON 序列化永不带密文。
+	CredKind   string `json:"-"`
+	CredLookup string `json:"-"`
+	CredCipher []byte `json:"-"`
+	CredNonce  []byte `json:"-"`
+	CredSalt   []byte `json:"-"`
 }
 
 // ProviderInstance 某插件类型的一个实例：一份配置 + 一套准入规则。

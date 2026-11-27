@@ -21,6 +21,7 @@ import (
 
 	"github.com/lyzz0612/deploy-center/internal/app"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins/appkey"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins/github_oidc"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins/password"
 	"github.com/lyzz0612/deploy-center/internal/httpapi"
@@ -135,17 +136,25 @@ func newExportEnv(t *testing.T) *exportEnv {
 	registry := plugins.NewRegistry()
 	registry.Register(github_oidc.NewWithIssuer(issuer))
 	registry.Register(password.New())
+	registry.Register(appkey.New())
+
+	tokens, err := app.NewTokenService([]byte(testMaster))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	h := httpapi.New(httpapi.Deps{
 		Version: "test", SchemaVersion: sqlite.SchemaVersion,
 		Login:      app.NewLoginService(testAdminPW),
 		Secrets:    app.NewSecretService(repo, sealer),
-		Identity:   app.NewIdentityService(repo, registry),
+		Identity:   app.NewIdentityService(repo, registry, sealer),
 		Providers:  app.NewProviderService(repo, registry),
-		Users:      app.NewUserService(repo, registry),
+		Users:      app.NewUserService(repo, registry, sealer),
 		UserGroups: app.NewUserGroupService(repo),
 		Grants:     app.NewGrantService(repo),
 		Export:     app.NewExportService(repo, sealer),
+		Tokens:     tokens,
+		Settings:   app.NewSettingsService(repo),
 		Static:     web.Dist,
 		LoginRateLimit: 1000,
 	})
@@ -220,11 +229,14 @@ func (e *exportEnv) createInstance(name, aud string, rules []map[string]string) 
 	return p.ID
 }
 
-// export 用给定 token 调 /v1/export。
-func (e *exportEnv) export(token, query string) (int, string) {
+// ---------- 两跳：/v1/auth 换票 + /v1/export 导出 ----------
+
+func (e *exportEnv) doReq(method, path string, setHdr func(*http.Request)) (int, string) {
 	e.t.Helper()
-	req, _ := http.NewRequest("GET", e.srv.URL+"/v1/export"+query, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req, _ := http.NewRequest(method, e.srv.URL+path, nil)
+	if setHdr != nil {
+		setHdr(req)
+	}
 	resp, err := e.cl.Do(req)
 	if err != nil {
 		e.t.Fatal(err)
@@ -235,7 +247,94 @@ func (e *exportEnv) export(token, query string) (int, string) {
 	return resp.StatusCode, b.String()
 }
 
-// seed 准备：分组 + 密钥 + （可选）给用户授权。
+// auth 用任意凭证形态调 POST /v1/auth。
+func (e *exportEnv) auth(setHdr func(*http.Request)) (int, string) {
+	return e.doReq("POST", "/v1/auth", setHdr)
+}
+
+func (e *exportEnv) authJWT(jwt string) (int, string) {
+	return e.auth(func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+jwt) })
+}
+
+func (e *exportEnv) authBasic(user, pass string) (int, string) {
+	return e.auth(func(r *http.Request) {
+		r.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(user+":"+pass)))
+	})
+}
+
+func (e *exportEnv) authAppKey(key string) (int, string) {
+	return e.auth(func(r *http.Request) { r.Header.Set(appkey.AppKeyHeader, key) })
+}
+
+// v1Token 从 auth 响应里取 token（失败即 Fatal）。
+func (e *exportEnv) v1Token(code int, out string) string {
+	e.t.Helper()
+	if code != 200 {
+		e.t.Fatalf("换票失败 %d %s", code, out)
+	}
+	var r struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil || r.Token == "" {
+		e.t.Fatalf("响应缺 token: %s", out)
+	}
+	return r.Token
+}
+
+// jwtV1Token 铸一个合法 JWT → 换票（常用捷径）。
+func (e *exportEnv) jwtV1Token() string {
+	e.t.Helper()
+	tok := mintJWT(e.t, e.key, e.kid, defaultClaims(e.issuer, e.aud))
+	return e.v1Token(e.authJWT(tok))
+}
+
+// export 用换来的短期 token 调 /v1/export。
+func (e *exportEnv) export(token, query string) (int, string) {
+	return e.doReq("GET", "/v1/export"+query, func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+token)
+	})
+}
+
+// createBuiltinUser 后台建内置用户（appkey/password），返回用户 id 与凭证明文。
+func (e *exportEnv) createBuiltinUser(typ, externalID, pw string) (int64, string) {
+	e.t.Helper()
+	code, out := e.api("POST", "/admin/api/users", map[string]string{
+		"type": typ, "external_id": externalID, "password": pw,
+	})
+	if code != 201 {
+		e.t.Fatalf("建用户失败 %d %s", code, out)
+	}
+	var r struct {
+		User       map[string]any `json:"user"`
+		Credential string         `json:"credential"`
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		e.t.Fatal(err)
+	}
+	return int64(r.User["id"].(float64)), r.Credential
+}
+
+// setRole 切换用户分级。
+func (e *exportEnv) setRole(uid int64, role string) {
+	e.t.Helper()
+	code, out := e.api("PATCH", fmt.Sprintf("/admin/api/users/%d/role", uid), map[string]string{"role": role})
+	if code != 200 {
+		e.t.Fatalf("切分级失败 %d %s", code, out)
+	}
+}
+
+// grant 授权用户看某密钥组。
+func (e *exportEnv) grant(uid, groupID int64) {
+	e.t.Helper()
+	code, out := e.api("POST", "/admin/api/grants", map[string]any{
+		"subject_kind": "user", "subject_id": uid, "target_kind": "group", "target_id": groupID,
+	})
+	if code != 201 {
+		e.t.Fatalf("授权失败 %d %s", code, out)
+	}
+}
+
+// seed 准备：分组 + 密钥 + github 用户敲门登记 + 授权 + 提级 normal。
 func (e *exportEnv) seed() (userID int64, groupID int64) {
 	e.t.Helper()
 	code, out := e.api("POST", "/admin/api/groups", map[string]string{"path": "minigames", "name": "小游戏"})
@@ -257,9 +356,10 @@ func (e *exportEnv) seed() (userID int64, groupID int64) {
 	e.api("POST", fmt.Sprintf("/admin/api/groups/%d/secrets", g2.ID), map[string]string{"key": "OSS_KEY", "value": "AKIA-EXPORT-TEST"})
 	e.api("POST", fmt.Sprintf("/admin/api/groups/%d/secrets", g1.ID), map[string]string{"key": "ROOT_KEY", "value": "ROOT-VAL"})
 
-	// 用合法 token 敲一次门 → 过准入即自动登记（无授权 = 空集 200）
-	tok := mintJWT(e.t, e.key, e.kid, defaultClaims(e.issuer, e.aud))
-	code, out = e.export(tok, "")
+	// 合法 JWT 敲门 → 过准入即自动登记（guest 无授权 = 空集 200）
+	jwt := mintJWT(e.t, e.key, e.kid, defaultClaims(e.issuer, e.aud))
+	v1tok := e.v1Token(e.authJWT(jwt))
+	code, out = e.export(v1tok, "")
 	if code != 200 || !strings.Contains(out, `"secrets":{}`) {
 		e.t.Fatalf("首次敲门应 200 空集, got %d %s", code, out)
 	}
@@ -276,13 +376,9 @@ func (e *exportEnv) seed() (userID int64, groupID int64) {
 	if uid == -1 {
 		e.t.Fatalf("github 用户未自动登记, users = %s", out)
 	}
-	// 授权给父组（含子孙）
-	code, out = e.api("POST", "/admin/api/grants", map[string]any{
-		"subject_kind": "user", "subject_id": uid, "target_kind": "group", "target_id": g1.ID,
-	})
-	if code != 201 {
-		e.t.Fatalf("授权失败 %d %s", code, out)
-	}
+	// 授权给父组（含子孙）+ 提级 normal（默认 guest 只能拿 key 名）
+	e.grant(uid, g1.ID)
+	e.setRole(uid, "normal")
 	return uid, g1.ID
 }
 
@@ -296,7 +392,7 @@ func TestExport_FullFlow(t *testing.T) {
 	})
 	_, _ = e.seed()
 
-	tok := mintJWT(t, e.key, e.kid, defaultClaims(e.issuer, e.aud))
+	tok := e.jwtV1Token()
 
 	t.Run("全量导出", func(t *testing.T) {
 		code, out := e.export(tok, "")
@@ -305,10 +401,14 @@ func TestExport_FullFlow(t *testing.T) {
 		}
 		var r struct {
 			Secrets map[string]string `json:"secrets"`
+			Masked  bool              `json:"masked"`
 		}
 		json.Unmarshal([]byte(out), &r)
 		if r.Secrets["OSS_KEY"] != "AKIA-EXPORT-TEST" || r.Secrets["ROOT_KEY"] != "ROOT-VAL" {
 			t.Errorf("secrets = %v", r.Secrets)
+		}
+		if r.Masked {
+			t.Errorf("normal 不应 masked")
 		}
 	})
 
@@ -346,25 +446,79 @@ func TestExport_FullFlow(t *testing.T) {
 	})
 }
 
-func TestExport_AuthFailures(t *testing.T) {
+// 两跳下的 token 侧失败（插件链失败见 TestV1Auth_PluginFailures）。
+func TestExport_TokenFailures(t *testing.T) {
 	e := newExportEnv(t)
 	e.createInstance("我的个人号", e.aud, []map[string]string{
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 	})
 	e.seed()
-	valid := mintJWT(t, e.key, e.kid, defaultClaims(e.issuer, e.aud))
 
 	t.Run("无 Bearer", func(t *testing.T) {
-		req, _ := http.NewRequest("GET", e.srv.URL+"/v1/export", nil)
-		resp, _ := e.cl.Do(req)
-		resp.Body.Close()
-		if resp.StatusCode != 401 {
-			t.Errorf("= %d, 期望 401", resp.StatusCode)
+		code, out := e.doReq("GET", "/v1/export", nil)
+		if code != 401 {
+			t.Errorf("= %d %s, 期望 401", code, out)
 		}
 	})
 
 	t.Run("垃圾 token", func(t *testing.T) {
-		if code, _ := e.export("garbage.token", ""); code != 401 {
+		if code, _ := e.export("garbage", ""); code != 401 {
+			t.Errorf("= %d, 期望 401", code)
+		}
+	})
+
+	t.Run("篡改 token（换 uid）", func(t *testing.T) {
+		tok := e.jwtV1Token()
+		// v1.<uid>.<exp>.<sig>：把 uid 段改掉
+		parts := strings.Split(tok, ".")
+		parts[1] = "999"
+		if code, _ := e.export(strings.Join(parts, "."), ""); code != 401 {
+			t.Errorf("= %d, 期望 401", code)
+		}
+	})
+
+	t.Run("删除用户后旧票失效", func(t *testing.T) {
+		tok := e.jwtV1Token()
+		_, out := e.api("GET", "/admin/api/users", nil)
+		var users []map[string]any
+		json.Unmarshal([]byte(out), &users)
+		for _, u := range users {
+			if u["provider_type"] == "github_oidc" {
+				uid := int64(u["id"].(float64))
+				if code, _ := e.api("DELETE", fmt.Sprintf("/admin/api/users/%d", uid), nil); code != 204 {
+					t.Fatalf("删用户失败")
+				}
+			}
+		}
+		// 票还在有效期内，但用户行没了 → 403
+		if code, _ := e.export(tok, ""); code != 403 {
+			t.Errorf("= %d, 期望 403（用户已删）", code)
+		}
+		// 重新敲门 → 重新登记 → 新票正常（无授权 = 空集）
+		tok2 := e.jwtV1Token()
+		code, out := e.export(tok2, "")
+		if code != 200 || !strings.Contains(out, `"secrets":{}`) {
+			t.Errorf("重新登记后应 200 空集 = %d %s", code, out)
+		}
+	})
+}
+
+// 插件认证链的失败：全部发生在第一跳 POST /v1/auth。
+func TestV1Auth_PluginFailures(t *testing.T) {
+	e := newExportEnv(t)
+	e.createInstance("我的个人号", e.aud, []map[string]string{
+		{"field": "repository_owner", "pattern": "^lyzz0612$"},
+	})
+	e.seed()
+
+	t.Run("无凭证头", func(t *testing.T) {
+		if code, _ := e.auth(nil); code != 401 {
+			t.Errorf("= %d, 期望 401", code)
+		}
+	})
+
+	t.Run("垃圾 JWT", func(t *testing.T) {
+		if code, _ := e.authJWT("garbage.token"); code != 401 {
 			t.Errorf("= %d, 期望 401", code)
 		}
 	})
@@ -373,7 +527,7 @@ func TestExport_AuthFailures(t *testing.T) {
 		hb, _ := json.Marshal(map[string]string{"alg": "none", "kid": e.kid})
 		cb, _ := json.Marshal(defaultClaims(e.issuer, e.aud))
 		tok := b64url(hb) + "." + b64url(cb) + "."
-		if code, _ := e.export(tok, ""); code != 401 {
+		if code, _ := e.authJWT(tok); code != 401 {
 			t.Errorf("= %d, 期望 401", code)
 		}
 	})
@@ -381,16 +535,16 @@ func TestExport_AuthFailures(t *testing.T) {
 	t.Run("错误签名（另一把密钥）", func(t *testing.T) {
 		other := testRSAKey(t)
 		tok := mintJWT(t, other, e.kid, defaultClaims(e.issuer, e.aud))
-		if code, _ := e.export(tok, ""); code != 401 {
+		if code, _ := e.authJWT(tok); code != 401 {
 			t.Errorf("= %d, 期望 401", code)
 		}
 	})
 
-	t.Run("过期 token", func(t *testing.T) {
+	t.Run("过期 JWT", func(t *testing.T) {
 		claims := defaultClaims(e.issuer, e.aud)
 		claims["exp"] = time.Now().Add(-time.Hour).Unix()
 		tok := mintJWT(t, e.key, e.kid, claims)
-		if code, _ := e.export(tok, ""); code != 401 {
+		if code, _ := e.authJWT(tok); code != 401 {
 			t.Errorf("= %d, 期望 401", code)
 		}
 	})
@@ -398,7 +552,7 @@ func TestExport_AuthFailures(t *testing.T) {
 	t.Run("假 issuer（非 GitHub）→ 401 且不拉 JWKS", func(t *testing.T) {
 		claims := defaultClaims("https://evil-issuer.example", e.aud)
 		tok := mintJWT(t, e.key, e.kid, claims)
-		if code, _ := e.export(tok, ""); code != 401 {
+		if code, _ := e.authJWT(tok); code != 401 {
 			t.Errorf("= %d, 期望 401（issuer 写死在代码里）", code)
 		}
 	})
@@ -406,10 +560,9 @@ func TestExport_AuthFailures(t *testing.T) {
 	t.Run("aud 规则不匹配 → 403 不建用户", func(t *testing.T) {
 		claims := defaultClaims(e.issuer, "https://other-service.example")
 		tok := mintJWT(t, e.key, e.kid, claims)
-		if code, _ := e.export(tok, ""); code != 403 {
+		if code, _ := e.authJWT(tok); code != 403 {
 			t.Errorf("= %d, 期望 403", code)
 		}
-		// 不该产生新用户（仍是 seed 的那 1 个）
 		_, out := e.api("GET", "/admin/api/users", nil)
 		var users []map[string]any
 		json.Unmarshal([]byte(out), &users)
@@ -422,16 +575,8 @@ func TestExport_AuthFailures(t *testing.T) {
 		claims := defaultClaims(e.issuer, e.aud)
 		claims["repository_owner"] = "someone-else"
 		tok := mintJWT(t, e.key, e.kid, claims)
-		if code, _ := e.export(tok, ""); code != 403 {
+		if code, _ := e.authJWT(tok); code != 403 {
 			t.Errorf("= %d, 期望 403", code)
-		}
-	})
-
-	t.Run("claim 缺字段（无 event_name 规则才过）", func(t *testing.T) {
-		// 本实例规则只查 repository_owner；删掉它后仍应过。
-		// 这里用 valid（默认通过）验证正常路径未受影响
-		if code, _ := e.export(valid, ""); code != 200 {
-			t.Errorf("valid = %d, 期望 200", code)
 		}
 	})
 }
@@ -447,7 +592,7 @@ func TestExport_InstanceSelection(t *testing.T) {
 	})
 	e.seed()
 
-	tok := mintJWT(t, e.key, e.kid, defaultClaims(e.issuer, e.aud))
+	tok := e.jwtV1Token()
 	code, out := e.export(tok, "")
 	if code != 200 {
 		t.Fatalf("多实例择优失败 = %d %s", code, out)
@@ -463,7 +608,6 @@ func TestExport_RevokeAndUserDelete(t *testing.T) {
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 	})
 	uid, _ := e.seed()
-	tok := mintJWT(t, e.key, e.kid, defaultClaims(e.issuer, e.aud))
 
 	// 删掉授权 → 空集
 	code, out := e.api("GET", fmt.Sprintf("/admin/api/users/%d/grants", uid), nil)
@@ -476,16 +620,21 @@ func TestExport_RevokeAndUserDelete(t *testing.T) {
 	if code, _ := e.api("DELETE", fmt.Sprintf("/admin/api/grants/%d", gid), nil); code != 204 {
 		t.Fatalf("删授权失败")
 	}
+	tok := e.jwtV1Token()
 	code, out = e.export(tok, "")
 	if code != 200 || !strings.Contains(out, `"secrets":{}`) {
 		t.Errorf("删授权后应空集 = %d %s", code, out)
 	}
 
-	// 删用户 → 下次敲门重新登记（无授权 = 空集 200）
+	// 删用户 → 旧票 403；重新敲门重新登记（无授权 = 空集 200）
 	if code, _ := e.api("DELETE", fmt.Sprintf("/admin/api/users/%d", uid), nil); code != 204 {
 		t.Fatalf("删用户失败")
 	}
-	code, out = e.export(tok, "")
+	if code, _ := e.export(tok, ""); code != 403 {
+		t.Errorf("删用户后旧票应 403 = %d", code)
+	}
+	tok2 := e.jwtV1Token()
+	code, out = e.export(tok2, "")
 	if code != 200 || !strings.Contains(out, `"secrets":{}`) {
 		t.Errorf("删用户后应重新登记且空集 = %d %s", code, out)
 	}
@@ -500,6 +649,17 @@ func TestProviderValidation(t *testing.T) {
 		})
 		if code != 400 {
 			t.Errorf("= %d %s, 期望 400", code, out)
+		}
+	})
+
+	t.Run("内置类型不能建实例", func(t *testing.T) {
+		for _, typ := range []string{"password", "appkey"} {
+			code, out := e.api("POST", "/admin/api/providers", map[string]any{
+				"type": typ, "name": "x", "config": map[string]any{}, "rules": []map[string]string{{"field": "a", "pattern": "b"}},
+			})
+			if code != 400 {
+				t.Errorf("%s 建实例 = %d %s, 期望 400（内置用户类型）", typ, code, out)
+			}
 		}
 	})
 
@@ -519,16 +679,6 @@ func TestProviderValidation(t *testing.T) {
 		})
 		if code != 201 {
 			t.Errorf("空配置实例 = %d %s, 期望 201", code, out)
-		}
-	})
-
-	t.Run("password 缺必填被拒", func(t *testing.T) {
-		code, out := e.api("POST", "/admin/api/providers", map[string]any{
-			"type": "password", "name": "x", "config": map[string]any{"username": "u"},
-			"rules": []map[string]string{{"field": "username", "pattern": "^u$"}},
-		})
-		if code != 400 {
-			t.Errorf("= %d %s, 期望 400（缺 password）", code, out)
 		}
 	})
 
@@ -567,8 +717,7 @@ func TestProviderValidation(t *testing.T) {
 			{"field": "repository_owner", "pattern": "^lyzz0612$"},
 		})
 		// 敲门建用户
-		tok := mintJWT(t, e.key, e.kid, defaultClaims(e.issuer, e.aud))
-		e.export(tok, "")
+		e.jwtV1Token()
 		_, out := e.api("GET", "/admin/api/users", nil)
 		var users []map[string]any
 		json.Unmarshal([]byte(out), &users)
@@ -583,6 +732,206 @@ func TestProviderValidation(t *testing.T) {
 		json.Unmarshal([]byte(out), &users)
 		if len(users) != 1 {
 			t.Errorf("删实例不应动用户, users = %s", out)
+		}
+	})
+}
+
+// ---------- 两跳新链路：appkey / 账密用户 + guest 分级 ----------
+
+func TestAppKeyFlow(t *testing.T) {
+	e := newExportEnv(t)
+	e.createInstance("我的个人号", e.aud, []map[string]string{
+		{"field": "repository_owner", "pattern": "^lyzz0612$"},
+	})
+	_, gID := e.seed() // 顺带建好密钥
+
+	uid, key := e.createBuiltinUser("appkey", "ci-app", "")
+	if !strings.HasPrefix(key, "ak_") {
+		t.Fatalf("appkey 应带 ak_ 前缀: %q", key)
+	}
+	e.grant(uid, gID)
+
+	t.Run("新用户默认 guest", func(t *testing.T) {
+		_, out := e.api("GET", "/admin/api/users", nil)
+		if !strings.Contains(out, `"role":"guest"`) {
+			t.Errorf("应有 guest 用户: %s", out)
+		}
+	})
+
+	t.Run("换票返回 role 与 TTL", func(t *testing.T) {
+		code, out := e.authAppKey(key)
+		if code != 200 {
+			t.Fatalf("= %d %s", code, out)
+		}
+		if !strings.Contains(out, `"role":"guest"`) || !strings.Contains(out, `"expires_in":120`) {
+			t.Errorf("auth 响应缺 role/expires_in: %s", out)
+		}
+	})
+
+	t.Run("guest 导出：key 名 + fake_value + masked", func(t *testing.T) {
+		tok := e.v1Token(e.authAppKey(key))
+		code, out := e.export(tok, "")
+		if code != 200 {
+			t.Fatalf("= %d %s", code, out)
+		}
+		if !strings.Contains(out, `"masked":true`) || !strings.Contains(out, `"OSS_KEY":"fake_value"`) {
+			t.Errorf("guest 应脱敏: %s", out)
+		}
+		if strings.Contains(out, "AKIA-EXPORT-TEST") {
+			t.Errorf("guest 不应拿到真值: %s", out)
+		}
+	})
+
+	t.Run("guest env 格式：假值 + 注释行", func(t *testing.T) {
+		tok := e.v1Token(e.authAppKey(key))
+		code, out := e.export(tok, "?format=env")
+		if code != 200 {
+			t.Fatalf("= %d %s", code, out)
+		}
+		if !strings.Contains(out, "# guest: values are masked") || !strings.Contains(out, "OSS_KEY=fake_value") {
+			t.Errorf("guest env 应带注释与假值: %s", out)
+		}
+	})
+
+	t.Run("提级 normal 后拿真值", func(t *testing.T) {
+		e.setRole(uid, "normal")
+		tok := e.v1Token(e.authAppKey(key))
+		code, out := e.export(tok, "")
+		if code != 200 || !strings.Contains(out, "AKIA-EXPORT-TEST") {
+			t.Errorf("= %d %s", code, out)
+		}
+		if !strings.Contains(out, `"masked":false`) {
+			t.Errorf("normal 应 masked:false: %s", out)
+		}
+	})
+
+	t.Run("错 appkey 403", func(t *testing.T) {
+		if code, _ := e.authAppKey("ak_not-the-right-one-at-all-1234567890"); code != 403 {
+			t.Errorf("= %d, 期望 403", code)
+		}
+	})
+
+	t.Run("reveal 凭证", func(t *testing.T) {
+		code, out := e.api("GET", fmt.Sprintf("/admin/api/users/%d/credential", uid), nil)
+		if code != 200 || !strings.Contains(out, key) {
+			t.Errorf("reveal = %d %s", code, out)
+		}
+	})
+
+	t.Run("轮换后旧 key 立即失效", func(t *testing.T) {
+		code, out := e.api("POST", fmt.Sprintf("/admin/api/users/%d/credential/rotate", uid), map[string]string{})
+		if code != 200 {
+			t.Fatalf("rotate = %d %s", code, out)
+		}
+		var r struct {
+			Value string `json:"value"`
+		}
+		json.Unmarshal([]byte(out), &r)
+		if r.Value == key || !strings.HasPrefix(r.Value, "ak_") {
+			t.Fatalf("应换发新 key: %s", out)
+		}
+		if code, _ := e.authAppKey(key); code != 403 {
+			t.Errorf("旧 key 应 403, got %d", code)
+		}
+		if code, _ := e.authAppKey(r.Value); code != 200 {
+			t.Errorf("新 key 应 200, got %d", code)
+		}
+	})
+}
+
+func TestPasswordUserFlow(t *testing.T) {
+	e := newExportEnv(t)
+	e.createInstance("我的个人号", e.aud, []map[string]string{
+		{"field": "repository_owner", "pattern": "^lyzz0612$"},
+	})
+	_, gID := e.seed()
+
+	uid, _ := e.createBuiltinUser("password", "ci-runner", "s3cret-pass")
+	e.grant(uid, gID)
+
+	t.Run("正确口令换票 → guest 脱敏", func(t *testing.T) {
+		code, out := e.authBasic("ci-runner", "s3cret-pass")
+		if code != 200 {
+			t.Fatalf("= %d %s", code, out)
+		}
+		tok := e.v1Token(200, out)
+		code, out = e.export(tok, "")
+		if code != 200 || !strings.Contains(out, `"masked":true`) {
+			t.Errorf("默认 guest 应脱敏 = %d %s", code, out)
+		}
+	})
+
+	t.Run("错口令 403", func(t *testing.T) {
+		if code, _ := e.authBasic("ci-runner", "wrong-pass"); code != 403 {
+			t.Errorf("= %d, 期望 403", code)
+		}
+	})
+
+	t.Run("错用户名 403", func(t *testing.T) {
+		if code, _ := e.authBasic("other-user", "s3cret-pass"); code != 403 {
+			t.Errorf("= %d, 期望 403", code)
+		}
+	})
+
+	t.Run("提级 + 轮换口令（自定义）", func(t *testing.T) {
+		e.setRole(uid, "normal")
+		code, out := e.api("POST", fmt.Sprintf("/admin/api/users/%d/credential/rotate", uid),
+			map[string]string{"password": "new-pass-42"})
+		if code != 200 {
+			t.Fatalf("rotate = %d %s", code, out)
+		}
+		if code, _ := e.authBasic("ci-runner", "s3cret-pass"); code != 403 {
+			t.Errorf("旧口令应 403")
+		}
+		tok := e.v1Token(e.authBasic("ci-runner", "new-pass-42"))
+		code, out = e.export(tok, "")
+		if code != 200 || !strings.Contains(out, "AKIA-EXPORT-TEST") {
+			t.Errorf("= %d %s", code, out)
+		}
+	})
+
+	t.Run("环境格式", func(t *testing.T) {
+		tok := e.v1Token(e.authBasic("ci-runner", "new-pass-42"))
+		code, out := e.export(tok, "?format=env")
+		if code != 200 || !strings.Contains(out, "OSS_KEY=AKIA-EXPORT-TEST") {
+			t.Errorf("= %d %s", code, out)
+		}
+	})
+}
+
+// TTL 设置：默认 2 分钟，可改，auth 响应的 expires_in 跟随。
+func TestTokenTTLSetting(t *testing.T) {
+	e := newExportEnv(t)
+
+	t.Run("默认 2 分钟", func(t *testing.T) {
+		uid, key := e.createBuiltinUser("appkey", "ttl-test", "")
+		_ = uid
+		code, out := e.authAppKey(key)
+		if code != 200 || !strings.Contains(out, `"expires_in":120`) {
+			t.Errorf("= %d %s, 期望 expires_in 120", code, out)
+		}
+	})
+
+	t.Run("改成 5 分钟后生效", func(t *testing.T) {
+		if code, out := e.api("PUT", "/admin/api/settings", map[string]int{"token_ttl_minutes": 5}); code != 200 {
+			t.Fatalf("改设置 = %d %s", code, out)
+		}
+		code, out := e.api("GET", "/admin/api/settings", nil)
+		if code != 200 || !strings.Contains(out, `"token_ttl_minutes":5`) {
+			t.Fatalf("读设置 = %d %s", code, out)
+		}
+		_, key := e.createBuiltinUser("appkey", "ttl-test-2", "")
+		code, out = e.authAppKey(key)
+		if code != 200 || !strings.Contains(out, `"expires_in":300`) {
+			t.Errorf("= %d %s, 期望 expires_in 300", code, out)
+		}
+	})
+
+	t.Run("越界值 400", func(t *testing.T) {
+		for _, bad := range []int{0, -1, 1441} {
+			if code, _ := e.api("PUT", "/admin/api/settings", map[string]int{"token_ttl_minutes": bad}); code != 400 {
+				t.Errorf("ttl=%d 应 400", bad)
+			}
 		}
 	})
 }

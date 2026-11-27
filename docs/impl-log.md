@@ -206,3 +206,43 @@
 - Go 1.27.4 zip 绿色安装到 `D:\Tools\go`（winget MSI 报 1603，权限问题），用户 PATH 已加
 - Node 24.19.0 / npm 11.17.0
 - npm 的 allow-scripts 拦了 esbuild postinstall，手动 `node node_modules/esbuild/install.js`（CI 无此问题）
+
+---
+
+## 2026-11-27 · 两跳换票 + appkey 内置用户 + guest/normal 分级
+
+### 需求（用户裁定）
+
+1. 统一两跳：所有用户先 `POST /v1/auth` 凭凭证换短期 token（默认 2 分钟，设置页可调），再 `GET /v1/export` 拿密钥——包括 GitHub OIDC
+2. appkey 成为内置用户类型；password 从「实例」模型改为内置用户类型（不能也不需要建 Provider 实例）；后台「新建用户」只能选这两种，实例型用户由准入自动登记
+3. 用户分级：默认一律 `guest`（只能拿 key 名，导出值为固定 `fake_value`，JSON 带 `masked: true`）；`normal` 拿真实值，用户页一键切换
+4. 无存量 password 实例，不做迁移
+
+### 改动（后端）
+
+- **插件契约**：`PluginType` 加 `Builtin() bool` 与 `FindUser(ctx, UserFinder, parsed)`；内置型的 Accept 收用户行凭证（password 的比对逻辑原样保留，只是 cfg 来源从实例换成用户行）；`UserFinder` 接口由 app 层适配 Repo（ErrNotFound → nil）
+- **appkey 插件**（新包）：`X-App-Key` 头独立于 Bearer/Basic 井水不河水；`ak_`+32B base64；认证 = sha256(appkey) 命中 `users.cred_lookup` 唯一索引（命中即通过，无需解密比对）
+- **TokenService**：`v1.<uid>.<exp>.<sig>`，HMAC key = HKDF(MASTER_KEY, "secret-gate/v1-token")（与 admin session 派生域分开）；无状态、过期即吊销、用户删则票失效
+- **IdentityService**：认证链拆两形态——内置型 FindUser+凭证比对直接命中用户行；实例型保持 Parse+实例遍历；`ResolveUser` 对内置型直返；自动登记一律 `role=guest`
+- **ExportService**：guest 不解密（key 名照列、值全 `fake_value`），审计日志带 role/masked；env 格式 guest 加首行注释 `# guest: values are masked`
+- **UserService**：`Create` 重写（type/external_id/password，appkey 自动生成返回明文）、`SetRole`、`RevealCredential`、`RotateCredential`（appkey 新随机、password 可自定义或随机，旧值立即失效）
+- **凭证存储**：AES-GCM 加密挂用户行（`cred_cipher/nonce/salt`），AAD=随机盐；`cred_lookup`=sha256 做索引；告别人在 `providers.config_json` 里躺明文密码的时代
+- **SettingsService**（新）：`token_ttl_minutes` 存 meta 表，clamp 1–1440，改完对新车立即生效
+- **schema v2**：users 加 role + 5 个 cred 列 + `idx_users_cred_lookup` 部分唯一索引；Provider 创建拒绝内置类型；`/v1/auth` 限流（与登录共用 limiter）+ 失败统一「凭证无效」防撞库
+
+### 改动（前端）
+
+- Users 页：新建表单只列内置类型（password 出口令框，appkey 自动生成）；创建成功当场展示凭证+复制按钮；列表加 role 徽标一键切换；详情抽屉凭证查看/轮换
+- Providers 页：新建实例类型下拉过滤 `builtin`
+- Settings 页：token 寿命编辑 + 两跳 curl 速查（原「账号口令实例」指引同步改掉）
+- selftest.yml：改成两跳（换票→导出），新增 `masked=true → 提级 normal` 的失败分支
+
+### 验证
+
+- 5 包 55 个测试函数连跑两轮全绿（新增 AppKeyFlow / PasswordUserFlow / TokenTTLSetting / V1Auth_PluginFailures / TokenFailures / RateLimit / TokenService 单测）
+- 真二进制 E2E（curl 实测）：建 appkey 用户→guest 换票（expires_in=120）→导出 `masked:true`+`fake_value`（env 带注释行）→提级 normal→真值→reveal/rotate（旧 key 403 新 key 200）→password 用户 Basic 换票→错口令 403→TTL 改 5 分钟→`expires_in=300`→password 建实例被拒 400
+
+### 已知取舍
+
+- 「预配置 github_oidc 用户」能力随旧 Create 一起移除：实例型用户只能等首次敲门自动登记（首跑无授权空集，补授权重跑即可）——selftest workflow 的指引文案已同步
+- 工作区遗留：根目录 dev.bat 与 scripts/dev.bat 在 HEAD 里并存（历史提交所致），本次顺手删根目录那份（scripts\dev.bat 为唯一入口），单独提交

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sort"
 	"sync"
+
+	"github.com/lyzz0612/deploy-center/internal/domain"
 )
 // Field 实例的配置字段声明（后台动态渲染表单用）。
 type Field struct {
@@ -31,23 +33,39 @@ type ClaimField struct {
 // Parsed 类型级验真后的中间产物：claims 已字符串化，但还没核对实例配置。
 type Parsed struct {
 	Type   string            // 插件类型名（由 Authenticate 填）
-	ExtID  string            // 稳定唯一外部 ID
+	ExtID  string            // 稳定唯一外部 ID；内置型 = 凭证查找键（appkey 为其 sha256 hex）
 	Disp   string            // 展示名
 	Kind   string            // machine | human
 	Claims map[string]string // 全部字符串化（含 iss/aud）
 	Secret string            // 口令类插件的凭证；绝不进 claims、绝不写日志
 }
 
+// UserFinder 内置类型定位用户行的仓储视图（app.Repo 由 app 层适配后传入）。
+// 语义约定：没找到时返回 (nil, nil)——ErrNotFound 之类的哨兵由适配层吞掉。
+type UserFinder interface {
+	UserByKey(ctx context.Context, typ, extID string) (*domain.User, error)
+	UserByCredLookup(ctx context.Context, lookup string) (*domain.User, error)
+}
+
 // PluginType 认证插件类型。
-// Parse 每请求一次（验签等重活）；Accept 每实例一次（只比对配置项）。
+// 两种形态：
+//   - 实例型（Builtin=false）：Parse 每请求一次；Accept 对照 Provider 实例配置；
+//     过准入规则自动登记用户（github_oidc）。
+//   - 内置型（Builtin=true）：没有实例，凭证挂后台创建的用户行；FindUser 按 Parse
+//     产物定位用户行，Accept 对照用户行的凭证（appkey / password）。
 type PluginType interface {
 	Type() string
 	Label() string
+	// Builtin 是否内置用户类型（不能也不需要创建 Provider 实例）。
+	Builtin() bool
 	Match(req *http.Request) bool
 	ConfigFields() []Field
 	ClaimFields() []ClaimField
 	Parse(ctx context.Context, req *http.Request) (*Parsed, error)
 	Accept(ctx context.Context, p *Parsed, cfg map[string]any) error
+	// FindUser 内置类型按 Parse 产物定位用户行；无此用户返回 (nil, nil)。
+	// 实例类型返回 (nil, nil)，不会被调用。
+	FindUser(ctx context.Context, f UserFinder, p *Parsed) (*domain.User, error)
 }
 
 // Registry 编译期注册表。加插件 = 一个包 + main 里一行 Register。

@@ -1,6 +1,6 @@
 # Secret Gate（仓库名 deploy-center）
 
-自托管的轻量密钥服务：GitHub Actions 凭一次性 OIDC 令牌取走被授权的密钥，**仓库里不再存任何长期凭据**。Infisical 的个人版：砍掉多租户 / RBAC / 审批流，保留 OIDC 短令牌、加密入库、按身份授权。
+自托管的轻量密钥服务：GitHub Actions 凭一次性 OIDC 令牌取走被授权的密钥，脚本 / 其他 CI 用 AppKey 或账号密码，**仓库里不再存任何长期凭据**。Infisical 的个人版：砍掉多租户 / RBAC / 审批流，保留 OIDC 短令牌、两跳换票、加密入库、按身份授权。
 
 ## 它解决什么
 
@@ -33,7 +33,7 @@ services:
 
 ## 接入第一个仓库
 
-后台建一个 `GitHub Actions (OIDC)` 实例（无配置项，准入规则建议：`aud` = 你的域名、`repository_owner` = 你的用户名、`event_name` = 白名单事件），然后：
+后台建一个 `GitHub Actions (OIDC)` 实例（无配置项，准入规则建议：`aud` = 你的域名、`repository_owner` = 你的用户名、`event_name` = 白名单事件），然后两跳换票：
 
 ```yaml
 jobs:
@@ -48,7 +48,11 @@ jobs:
         run: |
           TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://secrets.example.com" | jq -r .value)
-          curl -sfS -H "Authorization: Bearer $TOKEN" \
+          # 第一跳：OIDC 令牌换短期 token（默认 2 分钟寿命）
+          V1=$(curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
+            https://secrets.example.com/v1/auth | jq -r .token)
+          # 第二跳：拿短期 token 导出
+          curl -sfS -H "Authorization: Bearer $V1" \
             "https://secrets.example.com/v1/export?group=minigames/prod&format=env" \
             | while IFS= read -r line; do
                 echo "::add-mask::${line#*=}"
@@ -56,26 +60,34 @@ jobs:
               done
 ```
 
-首次运行会在后台「用户」页自动登记该仓库身份——授个权，再跑一次即拿到密钥。**本仓库自带「Secret Gate 自测」workflow**（Actions 页手动触发，地址写死 `https://secret-gate.skyup.top`）：打 healthz、取真 OIDC 令牌、调 `/v1/export`，失败信息会指明是部署、验签、准入还是授权的问题。非 GitHub 调用方可建 `账号口令` 实例，用 Basic auth 走同一出口。
+首次运行会在后台「用户」页自动登记该仓库身份（默认 guest）——授个权、提级 normal，再跑一次即拿到密钥。**本仓库自带「Secret Gate 自测」workflow**（Actions 页手动触发，地址写死 `https://secret-gate.skyup.top`）：打 healthz、取真 OIDC 令牌、走两跳换票、调 `/v1/export`，失败信息会指明是部署、验签、准入、授权还是分级的问题。非 GitHub 调用方在「用户」页建 **AppKey / 账号密码** 用户（`X-App-Key` 头或 Basic auth 走同一个 `/v1/auth`），凭证加密入库、随时可查看与轮换。
 
-## 概念（三层）
+## 概念（两跳 + 分级）
 
 ```
-请求 → 插件认证(验签 401) → 实例准入(正则 AND, 403, 不登记)
-     → 自动登记用户 → 授权(个人 ∪ 用户组 → 密钥组[含子孙] / 单条) → 解密返回
+第一跳 POST /v1/auth（凭证只在这里出现）
+   X-App-Key: ak_… ──┐
+   Basic 账号:口令 ────┼→ 插件认证(验签 401) → 内置型查用户行 / 实例准入(正则 AND, 403)
+   Bearer OIDC 令牌 ──┘   → 自动登记(实例型) → 签发短期 token(默认 2 分钟, 设置页可调)
+                              ↓ {"token", "expires_in", "role"}
+第二跳 GET /v1/export（只认短期 token）
+   授权(个人 ∪ 用户组 → 密钥组[含子孙] / 单条) 实时展开
+   → normal 解密真值 / guest 只给 key 名 + 固定假值(响应带 masked:true)
 ```
 
-- **插件类型**（代码）vs **Provider 实例**（数据）：同类型可建多个实例（不同准入范围），加新类型 = 一个 Go 包 + 一行注册，后台自动出现配置界面
+- **插件类型**（代码）分两种：实例型（github_oidc）后台可建多个实例（不同准入范围）；**内置型**（appkey / 账号密码）凭证直接挂在用户行上，后台「用户」页创建、不建实例。加新类型 = 一个 Go 包 + 一行注册
+- **用户分级**：`guest` 只能看到 key 名（导出值为 `fake_value`），`normal` 拿真实值；默认一律 guest，去用户页提级
 - **密钥组**两级：`项目/环境`；授权给父组 = 含全部子孙
-- **过准入规则即自动登记**，没有待批准：规则就是门槛（如 owner 限定），进来了能读什么由授权决定，没授权 = 空集
-- **授权每次请求实时计算**：删授权立即生效
+- **过准入规则即自动登记**（实例型），没有待批准：规则就是门槛（如 owner 限定），进来了能读什么由授权决定，没授权 = 空集
+- **授权每次请求实时计算**：删授权 / 切分级立即生效
 - **所有删除都是真删**，无归档无回收站
 - 准入规则 = 字段正则：整串锚定、规则间 AND、字段缺失不匹配、保存时编译校验；后台有「试一下」
 
 ## 安全边界
 
-- 密钥 AES-256-GCM 加密入库，AAD 每行随机 salt——单独拿走 `app.db` 解不开任何密钥；`MASTER_KEY` 换错服务拒绝启动（哨兵自检）
-- 明文只出现在：内存、reveal 接口（点眼睛时）、`/v1/export`（通过认证+准入+授权后）；API 响应 `Cache-Control: no-store`
+- 密钥与用户凭证（appkey / 口令）AES-256-GCM 加密入库，AAD 每行随机 salt——单独拿走 `app.db` 解不开任何东西；`MASTER_KEY` 换错服务拒绝启动（哨兵自检）
+- 明文只出现在：内存、reveal 接口（点眼睛时）、`/v1/export`（通过认证+准入+授权+normal 后）；API 响应 `Cache-Control: no-store`
+- appkey 认证按 sha256 索引命中（拿走 db 也推不出凭证）；口令比对常量时间；`/v1/auth` 与后台登录共用限流
 - 后台单口令（环境变量），改口令 = 改配置重启，旧会话全失效；登录限流每 IP 10 次/分
 - **不防**：主机被 root、进程内存被 dump、同时拿到 db 和环境变量的人
 - 备份 `app.db` 必须与当时的 `MASTER_KEY` 配套，分开存
@@ -83,8 +95,8 @@ jobs:
 ## 开发
 
 ```
-go test ./...                    # 后端：5 包 48 个测试函数
-npm --prefix web run build       # 前端：产物 go:embed 进二进制（约 12.5 MB）
+go test ./...                    # 后端：5 包 55 个测试函数
+npm --prefix web run build       # 前端：产物 go:embed 进二进制（约 18 MB）
 ```
 
 技术栈：Go 标准库（`net/http` 路由、AES-GCM、RS256 验签手写）+ 2 个第三方依赖（纯 Go SQLite、x/crypto）；前端 Vite + React 19 + Tailwind 4 + Radix。

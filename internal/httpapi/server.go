@@ -31,6 +31,8 @@ type Deps struct {
 	UserGroups    *app.UserGroupService
 	Grants        *app.GrantService
 	Export        *app.ExportService
+	Tokens        *app.TokenService   // /v1 短期 token 签发与验证
+	Settings      *app.SettingsService // 运行时设置（token TTL 等）
 	Static        fs.FS // web/dist
 
 	// 登录限流（测试可注入）；零值 = 每 IP 每分钟 10 次
@@ -102,6 +104,13 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /admin/api/users/{id}", s.requireSession(s.handleGetUser))
 	mux.HandleFunc("DELETE /admin/api/users/{id}", s.requireSession(s.handleDeleteUser))
 	mux.HandleFunc("GET /admin/api/users/{id}/grants", s.requireSession(s.handleUserGrants))
+	mux.HandleFunc("PATCH /admin/api/users/{id}/role", s.requireSession(s.handleSetUserRole))
+	mux.HandleFunc("GET /admin/api/users/{id}/credential", s.requireSession(s.handleRevealCredential))
+	mux.HandleFunc("POST /admin/api/users/{id}/credential/rotate", s.requireSession(s.handleRotateCredential))
+
+	// 运行时设置（token TTL 等）
+	mux.HandleFunc("GET /admin/api/settings", s.requireSession(s.handleGetSettings))
+	mux.HandleFunc("PUT /admin/api/settings", s.requireSession(s.handlePutSettings))
 
 	// 用户组
 	mux.HandleFunc("GET /admin/api/user-groups", s.requireSession(s.handleListUserGroups))
@@ -118,7 +127,8 @@ func (s *server) routes() http.Handler {
 	// 被拒记录
 	mux.HandleFunc("GET /admin/api/rejections", s.requireSession(s.handleRejections))
 
-	// CI 侧导出
+	// CI 侧两跳：凭证换票 → 票导出
+	mux.HandleFunc("POST /v1/auth", s.handleV1Auth)
 	mux.HandleFunc("GET /v1/export", s.handleExport)
 
 	// SPA

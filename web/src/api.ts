@@ -83,11 +83,17 @@ export const api = {
 
   // ---- M3: 用户与授权 ----
   users: () => req('/admin/api/users') as Promise<UserRow[]>,
-  createUser: (providerType: string, externalId: string, display: string) =>
+  createUser: (type: string, externalId: string, password: string, display: string) =>
     req('/admin/api/users', {
       method: 'POST',
-      body: JSON.stringify({ provider_type: providerType, external_id: externalId, display }),
+      body: JSON.stringify({ type, external_id: externalId, password, display }),
     }),
+  setUserRole: (id: number, role: 'guest' | 'normal') =>
+    req(`/admin/api/users/${id}/role`, { method: 'PATCH', body: JSON.stringify({ role }) }),
+  revealCredential: (id: number) =>
+    req(`/admin/api/users/${id}/credential`) as Promise<{ value: string }>,
+  rotateCredential: (id: number, password: string) =>
+    req(`/admin/api/users/${id}/credential/rotate`, { method: 'POST', body: JSON.stringify({ password }) }) as Promise<{ value: string }>,
   userDetail: (id: number) => req(`/admin/api/users/${id}`),
   deleteUser: (id: number) => req(`/admin/api/users/${id}`, { method: 'DELETE' }),
   userGrants: (id: number) => req(`/admin/api/users/${id}/grants`) as Promise<Grant[]>,
@@ -100,6 +106,11 @@ export const api = {
     }),
   deleteGrant: (id: number) => req(`/admin/api/grants/${id}`, { method: 'DELETE' }),
   rejections: () => req('/admin/api/rejections') as Promise<Rejection[]>,
+
+  // ---- 运行时设置 ----
+  settings: () => req('/admin/api/settings') as Promise<{ token_ttl_minutes: number }>,
+  putSettings: (tokenTtlMinutes: number) =>
+    req('/admin/api/settings', { method: 'PUT', body: JSON.stringify({ token_ttl_minutes: tokenTtlMinutes }) }),
 
   // ---- M4: 用户组 ----
   userGroups: () => req('/admin/api/user-groups'),

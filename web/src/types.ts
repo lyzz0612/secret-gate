@@ -44,6 +44,7 @@ export interface ClaimField {
 export interface PluginType {
   type: string
   label: string
+  builtin: boolean
   config_fields: PluginField[]
   claim_fields: ClaimField[]
 }
@@ -71,6 +72,9 @@ export interface UserRow {
   external_id: string
   display: string
   kind: string
+  role: string // 'guest' | 'normal'
+  cred_kind: string // 'appkey' | 'password' | ''
+  builtin: boolean
   source_id: number
   created_at: string
   last_seen_at: string

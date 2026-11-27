@@ -11,10 +11,13 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion 当前 schema 版本（= migrations 数量）。
-const SchemaVersion = 1
+//go:embed migration_v2.sql
+var v2SQL string
 
-var migrations = []string{schemaSQL}
+// SchemaVersion 当前 schema 版本（= migrations 数量）。
+const SchemaVersion = 2
+
+var migrations = []string{schemaSQL, v2SQL}
 
 type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)

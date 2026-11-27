@@ -1,8 +1,6 @@
 package httpapi_test
 
 import (
-	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -52,9 +50,8 @@ func TestUserGroupGrants(t *testing.T) {
 		t.Fatalf("组授权 = %d %s", code, out)
 	}
 
-	tok := mintJWT(e.t, e.key, e.kid, defaultClaims(e.issuer, e.aud))
-
 	t.Run("成员通过组授权导出", func(t *testing.T) {
+		tok := e.jwtV1Token()
 		code, out := e.export(tok, "")
 		if code != 200 || !strings.Contains(out, "AKIA-EXPORT-TEST") {
 			t.Errorf("= %d %s", code, out)
@@ -63,6 +60,7 @@ func TestUserGroupGrants(t *testing.T) {
 
 	t.Run("移出成员立即失去访问", func(t *testing.T) {
 		e.api("PUT", fmt.Sprintf("/admin/api/user-groups/%d/members", ug.ID), map[string]any{"user_ids": []int64{}})
+		tok := e.jwtV1Token()
 		code, out := e.export(tok, "")
 		if code != 200 || !strings.Contains(out, `"secrets":{}`) {
 			t.Errorf("移出后应空集 = %d %s", code, out)
@@ -78,6 +76,7 @@ func TestUserGroupGrants(t *testing.T) {
 		if code, _ := e.api("DELETE", fmt.Sprintf("/admin/api/user-groups/%d", ug.ID), nil); code != 204 {
 			t.Fatalf("删用户组失败")
 		}
+		tok := e.jwtV1Token()
 		code, out := e.export(tok, "")
 		if code != 200 || !strings.Contains(out, `"secrets":{}`) {
 			t.Errorf("删组后应空集 = %d %s", code, out)
@@ -85,95 +84,7 @@ func TestUserGroupGrants(t *testing.T) {
 	})
 }
 
-// ---------- M5：账号口令插件 ----------
-
-func basicHeader(user, pass string) string {
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
-}
-
-func (e *exportEnv) exportBasic(user, pass, query string) (int, string) {
-	e.t.Helper()
-	req, _ := http.NewRequest("GET", e.srv.URL+"/v1/export"+query, nil)
-	req.Header.Set("Authorization", basicHeader(user, pass))
-	resp, err := e.cl.Do(req)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	b := new(bytes.Buffer)
-	b.ReadFrom(resp.Body)
-	return resp.StatusCode, b.String()
-}
-
-func TestPasswordPlugin(t *testing.T) {
-	e := newExportEnv(t)
-
-	// 建账号口令实例
-	code, out := e.api("POST", "/admin/api/providers", map[string]any{
-		"type": "password", "name": "CI 脚本通道",
-		"config": map[string]any{"username": "ci-runner", "password": "s3cret-pass"},
-		"rules":  []map[string]string{{"field": "username", "pattern": "^ci-runner$"}},
-	})
-	if code != 201 {
-		t.Fatalf("建实例 = %d %s", code, out)
-	}
-
-	// 敲门：正确口令 → 过准入即自动登记（无授权 = 空集 200）
-	code, out = e.exportBasic("ci-runner", "s3cret-pass", "")
-	if code != 200 || !strings.Contains(out, `"secrets":{}`) {
-		t.Fatalf("正确口令首次应 200 空集 = %d %s", code, out)
-	}
-	_, out = e.api("GET", "/admin/api/users", nil)
-	var users []map[string]any
-	json.Unmarshal([]byte(out), &users)
-	if len(users) != 1 || users[0]["provider_type"] != "password" {
-		t.Fatalf("应自动登记一个 password 用户 = %s", out)
-	}
-	uid := int64(users[0]["id"].(float64))
-
-	// 错口令 → 403，不建新用户
-	if code, _ := e.exportBasic("ci-runner", "wrong-pass", ""); code != 403 {
-		t.Errorf("错口令应 403")
-	}
-	_, out = e.api("GET", "/admin/api/users", nil)
-	users = nil
-	json.Unmarshal([]byte(out), &users)
-	if len(users) != 1 {
-		t.Errorf("错口令不应建用户, = %s", out)
-	}
-
-	// 准备密钥 + 授权（seed 用 JWT 敲门，需要 github 实例在场）
-	e.createInstance("我的个人号", e.aud, []map[string]string{
-		{"field": "repository_owner", "pattern": "^lyzz0612$"},
-	})
-	_, gID := e.seed()
-	// seed 会登记一个 github 用户；这里给 password 用户授权
-	e.api("POST", "/admin/api/grants", map[string]any{
-		"subject_kind": "user", "subject_id": uid, "target_kind": "group", "target_id": gID,
-	})
-
-	t.Run("正确口令导出", func(t *testing.T) {
-		code, out := e.exportBasic("ci-runner", "s3cret-pass", "")
-		if code != 200 || !strings.Contains(out, "AKIA-EXPORT-TEST") {
-			t.Errorf("= %d %s", code, out)
-		}
-	})
-
-	t.Run("错用户名 403", func(t *testing.T) {
-		if code, _ := e.exportBasic("other-user", "s3cret-pass", ""); code != 403 {
-			t.Errorf("= %d, 期望 403", code)
-		}
-	})
-
-	t.Run("环境格式", func(t *testing.T) {
-		code, out := e.exportBasic("ci-runner", "s3cret-pass", "?format=env")
-		if code != 200 || !strings.Contains(out, "OSS_KEY=AKIA-EXPORT-TEST") {
-			t.Errorf("= %d %s", code, out)
-		}
-	})
-}
-
-// ---------- M5：插件类型元数据 ----------
+// ---------- 插件类型元数据 ----------
 
 func TestPluginsListing(t *testing.T) {
 	e := newExportEnv(t)
@@ -181,14 +92,72 @@ func TestPluginsListing(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("= %d %s", code, out)
 	}
-	if !strings.Contains(out, "github_oidc") || !strings.Contains(out, "password") {
-		t.Errorf("插件清单应含两种类型 = %s", out)
+	if !strings.Contains(out, "github_oidc") || !strings.Contains(out, "password") || !strings.Contains(out, "appkey") {
+		t.Errorf("插件清单应含三种类型 = %s", out)
+	}
+	// 内置标记：前端据此过滤（Providers 下拉去掉内置，Users 下拉只留内置）
+	if !strings.Contains(out, `"builtin":true`) || !strings.Contains(out, `"builtin":false`) {
+		t.Errorf("应带 builtin 标记 = %s", out)
 	}
 	// 回归：nil 切片序列化成 null 会让前端 .length 崩整页（新建实例黑屏）
 	if !strings.Contains(out, `"config_fields":[]`) {
-		t.Errorf("github_oidc 无配置字段时应输出空数组而不是 null = %s", out)
+		t.Errorf("无配置字段时应输出空数组而不是 null = %s", out)
 	}
 	if !strings.Contains(out, `"claim_fields":[`) {
 		t.Errorf("claim_fields 应是数组 = %s", out)
+	}
+}
+
+// ---------- 被拒记录：第一跳失败进面板 ----------
+
+func TestRejectionsAfterAuthFailures(t *testing.T) {
+	e := newExportEnv(t)
+	e.createInstance("我的个人号", e.aud, []map[string]string{
+		{"field": "repository_owner", "pattern": "^lyzz0612$"},
+	})
+
+	// appkey 错 key + 错口令 → 都应出现在被拒面板
+	e.authAppKey("ak_wrong-key-0000000000000000000000000")
+	e.authBasic("nobody", "bad-pass")
+
+	code, out := e.api("GET", "/admin/api/rejections", nil)
+	if code != 200 {
+		t.Fatalf("= %d %s", code, out)
+	}
+	if !strings.Contains(out, `"type":"appkey"`) || !strings.Contains(out, `"type":"password"`) {
+		t.Errorf("被拒记录应含 appkey / password 尝试: %s", out)
+	}
+}
+
+// ---------- 限流：/v1/auth 也受 limiter 保护 ----------
+
+func TestV1AuthRateLimit(t *testing.T) {
+	// 独立小限流环境（每 IP 每窗口 3 次）
+	cl := newClient(t, newServer(t, 3))
+	_ = cl
+
+	// 用 appkey 撞 4 次（凭错凭证即可）：第 4 次应 429
+	hdr := func(r *http.Request) { r.Header.Set("X-App-Key", "ak_rate_limit_probe_000000000000") }
+	for i := 0; i < 3; i++ {
+		req, _ := http.NewRequest("POST", cl.base+"/v1/auth", nil)
+		hdr(req)
+		resp, err := cl.c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == 429 {
+			t.Fatalf("第 %d 次不应 429", i+1)
+		}
+	}
+	req, _ := http.NewRequest("POST", cl.base+"/v1/auth", nil)
+	hdr(req)
+	resp, err := cl.c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 429 {
+		t.Errorf("第 4 次应 429, got %d", resp.StatusCode)
 	}
 }

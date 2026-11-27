@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -9,18 +10,29 @@ import (
 	"github.com/lyzz0612/deploy-center/internal/app"
 )
 
-// handleExport CI 侧唯一取密钥入口。
-// 认证链：插件 Parse（401）→ 实例准入规则（403，不建用户）
-// → 自动登记用户 → 授权实时展开（无授权 = 空集 200）→ 解密。
-// ?group=path 只导该 path 及子孙；?format=env 输出 KEY=VALUE 行。
-func (s *server) handleExport(w http.ResponseWriter, r *http.Request) {
+// ---------- 第一跳：换票 ----------
+
+// handleV1Auth 凭证换短期 token。
+// 认证链：插件 Parse（401）→ 内置型查用户行 / 实例型准入规则（403，不建用户）
+// → 自动登记用户 → 按设置里的 TTL 签发 token。
+// 三种凭证形态：X-App-Key 头（appkey） / Basic（账密） / Bearer（github OIDC）。
+func (s *server) handleV1Auth(w http.ResponseWriter, r *http.Request) {
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	if !s.limiter.allow(ip) {
+		writeErr(w, http.StatusTooManyRequests, "尝试过于频繁，请 1 分钟后再试")
+		return
+	}
+
 	outcome, err := s.deps.Identity.Authenticate(r.Context(), r)
 	if err != nil {
 		switch {
 		case errors.Is(err, app.ErrNoPlugin), errors.Is(err, app.ErrTokenInvalid):
-			writeErr(w, http.StatusUnauthorized, "令牌无效")
+			writeErr(w, http.StatusUnauthorized, "凭证无效")
 		case errors.Is(err, app.ErrNotAdmitted):
-			writeErr(w, http.StatusForbidden, "身份未被接受")
+			writeErr(w, http.StatusForbidden, "凭证无效")
 		default:
 			mapErr(w, err)
 		}
@@ -33,8 +45,40 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ttl := s.deps.Settings.TokenTTL(r.Context())
+	token, exp := s.deps.Tokens.Issue(u.ID, ttl, s.now())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":       token,
+		"expires_in":  int(ttl.Seconds()),
+		"expires_at":  exp.UTC().Format("2006-01-02T15:04:05Z"),
+		"role":        u.Role,
+		"display":     u.Display,
+		"token_type":  "Bearer",
+	})
+}
+
+// ---------- 第二跳：导出 ----------
+
+// handleExport CI 侧唯一取密钥入口：只认 /v1/auth 换发的短期 token。
+// 认证：验 HMAC + exp（401）→ 按 uid 查用户行（用户已删 → 403）
+// → 授权实时展开（无授权 = 空集 200）→ normal 解密 / guest 脱敏。
+// ?group=path 只导该 path 及子孙；?format=env 输出 KEY=VALUE 行。
+func (s *server) handleExport(w http.ResponseWriter, r *http.Request) {
+	uid, err := s.deps.Tokens.Verify(bearerToken(r), s.now())
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "令牌无效或已过期")
+		return
+	}
+
+	u, err := s.deps.Users.Get(r.Context(), uid)
+	if err != nil {
+		// token 有效但用户行没了（被删）：票随人走，人没了票也没意义
+		writeErr(w, http.StatusForbidden, "用户不存在或已被删除")
+		return
+	}
+
 	groupPath := strings.TrimSpace(r.URL.Query().Get("group"))
-	secrets, _, err := s.deps.Export.Export(r.Context(), u, groupPath)
+	secrets, masked, _, err := s.deps.Export.Export(r.Context(), *u, groupPath)
 	if err != nil {
 		mapErr(w, err)
 		return
@@ -47,6 +91,10 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request) {
 		}
 		sort.Strings(keys)
 		var b strings.Builder
+		if masked {
+			// # 是 env 注释，source 无害；脚本可 grep 到被降级的信号
+			b.WriteString("# guest: values are masked\n")
+		}
 		for _, k := range keys {
 			v := secrets[k]
 			// env 行格式无法承载换行：含换行的值直接拒绝，避免静默截断
@@ -65,5 +113,15 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]map[string]string{"secrets": secrets})
+	writeJSON(w, http.StatusOK, map[string]any{"secrets": secrets, "masked": masked})
+}
+
+// bearerToken 提取 Authorization: Bearer <token>。
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(h) > len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
+		return strings.TrimSpace(h[len(prefix):])
+	}
+	return ""
 }

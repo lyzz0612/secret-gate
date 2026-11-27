@@ -1,13 +1,14 @@
 name: Secret Gate 自测
 
 # 手动触发：验证部署在 https://secret-gate.skyup.top 的密钥服务全链路
-# OIDC 验签 → 准入 → 自动登记 → 授权 → 解密导出
+# OIDC 验签 → 准入 → 自动登记 → 换票 → 授权 → 解密导出
 #
 # 失败时按错误信息对号入座：
-#   服务不可达     → 部署/反代/DNS 问题
-#   401 令牌无效   → 服务端验签问题（时间 / JWKS 访问）
-#   403 身份未被接受 → 准入规则没过（检查实例规则的 aud / repository_owner / event_name）
-#   200 但 0 条     → 全链路通了，只是没授权（去后台「授权」页给本仓库授一个密钥组）
+#   服务不可达       → 部署/反代/DNS 问题
+#   换票 401 令牌无效 → 服务端验签问题（时间 / JWKS 访问）
+#   换票 403         → 准入规则没过（检查实例规则的 aud / repository_owner / event_name）
+#   200 但 0 条       → 全链路通了，只是没授权（去后台「授权」页给本仓库授一个密钥组）
+#   200 但 masked    → 用户是 guest 级别，只拿到假值（去后台用户页提级 normal）
 
 on:
   workflow_dispatch:
@@ -58,7 +59,39 @@ jobs:
           echo "── 本次令牌的关键 claims（拿去对准入规则）──"
           echo "$payload" | tr '_-' '/+' | base64 -d | jq '{iss, aud, repository_owner, repository, repository_id, event_name, ref, actor}'
 
-      - name: 导出密钥 /v1/export
+      - name: 换票 POST /v1/auth
+        run: |
+          code=$(curl -sS -o /tmp/auth.json -w '%{http_code}' --max-time 20 \
+            -X POST -H "Authorization: Bearer $(cat /tmp/gate-token)" "$GATE/v1/auth" || true)
+          echo "POST /v1/auth → HTTP $code"
+          cat /tmp/auth.json 2>/dev/null; echo
+
+          case "$code" in
+            200)
+              V1TOKEN=$(jq -r .token /tmp/auth.json)
+              ROLE=$(jq -r .role /tmp/auth.json)
+              TTL=$(jq -r .expires_in /tmp/auth.json)
+              echo "$V1TOKEN" > /tmp/v1-token
+              echo "换票成功：role=$ROLE expires_in=${TTL}s"
+              if [ "$ROLE" = "guest" ]; then
+                echo "::warning::本仓库身份是 guest——导出只能拿到 key 名与假值"
+              fi
+              ;;
+            401)
+              echo "::error::换票 401 令牌无效——服务端验签失败（检查服务器时间、对 token.actions.githubusercontent.com 的出网访问）"
+              exit 1
+              ;;
+            403)
+              echo "::error::换票 403 身份未被接受——准入规则没过。检查后台实例规则是否覆盖：aud=^$AUDIENCE\$、repository_owner=^lyzz0612\$、event_name 含 workflow_dispatch"
+              exit 1
+              ;;
+            *)
+              echo "::error::换票意外状态 $code"
+              exit 1
+              ;;
+          esac
+
+      - name: 导出密钥 GET /v1/export
         run: |
           GROUP='${{ inputs.group }}'
           URL="$GATE/v1/export"
@@ -66,19 +99,24 @@ jobs:
           echo "GET $URL"
 
           code=$(curl -sS -o /tmp/export.json -w '%{http_code}' --max-time 20 \
-            -H "Authorization: Bearer $(cat /tmp/gate-token)" "$URL" || true)
+            -H "Authorization: Bearer $(cat /tmp/v1-token)" "$URL" || true)
 
           case "$code" in
             200)
               count=$(jq -r '.secrets | length' /tmp/export.json)
               keys=$(jq -r '.secrets | keys | join(", ")' /tmp/export.json)
-              echo "拿到 $count 条密钥：${keys:-（无）}"
+              masked=$(jq -r '.masked' /tmp/export.json)
+              echo "拿到 $count 条密钥：${keys:-（无）}（masked=$masked）"
+              if [ "$masked" = "true" ]; then
+                echo "::error::本仓库身份是 guest 级别，只拿到 key 名与假值——去后台「用户」页把该身份提级 normal"
+                exit 1
+              fi
               if [ "$count" = "0" ]; then
                 echo "::warning::认证、准入、登记全通，但没有任何授权"
                 echo "::error::去后台「授权」页给 lyzz0612/deploy-center（用户页里 github_oidc 身份）授一个密钥组，再跑一次"
                 exit 1
               fi
-              echo "::notice::✅ 全链路通：OIDC 验签 → 准入 → 授权 → 解密"
+              echo "::notice::✅ 全链路通：OIDC 验签 → 准入 → 换票 → 授权 → 解密"
               {
                 echo "## Secret Gate 自测结果"
                 echo ""
@@ -91,11 +129,11 @@ jobs:
               } >> "$GITHUB_STEP_SUMMARY"
               ;;
             401)
-              echo "::error::401 令牌无效——服务端验签失败（检查服务器时间、对 token.actions.githubusercontent.com 的出网访问）"
+              echo "::error::导出 401 短期令牌无效——换票与导出之间隔太久（token 已过期）？两跳请紧挨着执行"
               cat /tmp/export.json; exit 1
               ;;
             403)
-              echo "::error::403 身份未被接受——准入规则没过。检查后台实例规则是否覆盖：aud=^$AUDIENCE\$、repository_owner=^lyzz0612\$、event_name 含 workflow_dispatch"
+              echo "::error::导出 403 用户不存在——换票后用户被删了？重新跑一次"
               cat /tmp/export.json; exit 1
               ;;
             *)

@@ -17,6 +17,7 @@ import (
 
 	"github.com/lyzz0612/deploy-center/internal/app"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins/appkey"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins/github_oidc"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins/password"
 	"github.com/lyzz0612/deploy-center/internal/httpapi"
@@ -85,18 +86,26 @@ func run(args []string) error {
 	registry := plugins.NewRegistry()
 	registry.Register(github_oidc.New())
 	registry.Register(password.New())
+	registry.Register(appkey.New())
+
+	tokens, err := app.NewTokenService([]byte(masterKey))
+	if err != nil {
+		return err
+	}
 
 	h := httpapi.New(httpapi.Deps{
 		Version:       version,
 		SchemaVersion: sqlite.SchemaVersion,
 		Login:         app.NewLoginService(adminPassword),
 		Secrets:       app.NewSecretService(repo, sealer),
-		Identity:      app.NewIdentityService(repo, registry),
+		Identity:      app.NewIdentityService(repo, registry, sealer),
 		Providers:     app.NewProviderService(repo, registry),
-		Users:         app.NewUserService(repo, registry),
+		Users:         app.NewUserService(repo, registry, sealer),
 		UserGroups:    app.NewUserGroupService(repo),
 		Grants:        app.NewGrantService(repo),
 		Export:        app.NewExportService(repo, sealer),
+		Tokens:        tokens,
+		Settings:      app.NewSettingsService(repo),
 		Static:        web.Dist,
 	})
 
