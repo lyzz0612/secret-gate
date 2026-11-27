@@ -33,6 +33,17 @@ REM 开发主密钥固定写死：随机生成会导致每次重启数据库解�
 if not defined MASTER_KEY set "MASTER_KEY=dev-only-32-bytes-key-do-not-use-in-prod"
 if not defined ADMIN_PASSWORD set "ADMIN_PASSWORD=dev"
 
+REM 端口被旧进程占着时 go run 只会吐一行 bind 错误就退出：页面还是旧进程的，
+REM 很容易误以为"改了代码没生效"。先自己查一遍，把该杀谁直接打出来。
+netstat -ano | findstr ":8788 " | findstr "LISTENING" >nul
+if not errorlevel 1 (
+  echo [!] 8788 端口已被占用（多半是上一次 dev.bat 的进程还在跑）。
+  echo     先关掉它再启动，否则 go run 会退出、你看到的仍是旧进程的页面：
+  for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":8788 " ^| findstr "LISTENING"') do echo     taskkill /PID %%p /F
+  pause
+  exit /b 1
+)
+
 echo [ok] 后台: http://127.0.0.1:8788/admin   口令: dev   (Ctrl+C 停止)
 
 REM 3 秒后开浏览器，等服务起来；设 SG_NO_BROWSER=1 可跳过（调试用）
