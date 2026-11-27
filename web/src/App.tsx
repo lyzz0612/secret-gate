@@ -8,6 +8,7 @@ import { SecretsPage } from './pages/Secrets'
 import { ProvidersPage } from './pages/Providers'
 import { UsersPage } from './pages/Users'
 import { UserGroupsPage } from './pages/UserGroups'
+import { GrantsPage } from './pages/Grants'
 import { SettingsPage } from './pages/Settings'
 
 type Page = 'overview' | 'secrets' | 'grants' | 'users' | 'usergroups' | 'providers' | 'settings'
@@ -136,11 +137,11 @@ export default function App() {
         <div className="min-h-0 flex-1 overflow-y-auto">
           {page === 'overview' && <OverviewPage overview={overview} status={status} onGo={setPage} />}
           {page === 'secrets' && <SecretsPage onChanged={refreshOverview} />}
-          {page === 'providers' && <ProvidersPage onChanged={refreshOverview} />}
+          {page === 'grants' && <GrantsPage onChanged={refreshOverview} />}
           {page === 'users' && <UsersPage onChanged={refreshOverview} />}
           {page === 'usergroups' && <UserGroupsPage onChanged={refreshOverview} />}
+          {page === 'providers' && <ProvidersPage onChanged={refreshOverview} />}
           {page === 'settings' && <SettingsPage />}
-          {page === 'grants' && <Placeholder page={page} />}
         </div>
       </main>
     </div>
@@ -150,20 +151,4 @@ export default function App() {
 function subtitle(page: Page, overview: Overview | null) {
   if (page === 'overview') return overview ? `${overview.groups} 组 · ${overview.secrets} 密钥` : ''
   return ''
-}
-
-function Placeholder({ page }: { page: Page }) {
-  const names: Record<string, string> = {
-    grants: '授权',
-    users: '用户管理',
-    usergroups: '用户组',
-    providers: 'Provider 实例',
-    settings: '设置',
-  }
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2">
-      <div className="mono-label">{names[page] ?? page}</div>
-      <div className="text-[12px] text-muted">建设中 · 见 docs/plan.md 里程碑</div>
-    </div>
-  )
 }
