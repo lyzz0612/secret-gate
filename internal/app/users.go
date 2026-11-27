@@ -74,6 +74,70 @@ func (s *UserService) GroupsOf(ctx context.Context, id int64) ([]domain.UserGrou
 	return out, nil
 }
 
+// ---------- 用户组 ----------
+
+// UserGroupService 用户组管理：批量发授权的主体。
+type UserGroupService struct {
+	repo Repo
+}
+
+func NewUserGroupService(repo Repo) *UserGroupService { return &UserGroupService{repo: repo} }
+
+func (s *UserGroupService) List(ctx context.Context) ([]UserGroupView, error) {
+	gs, err := s.repo.ListUserGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UserGroupView, 0, len(gs))
+	for _, g := range gs {
+		members, err := s.repo.GroupMembers(ctx, g.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, UserGroupView{UserGroup: g, MemberCount: len(members)})
+	}
+	return out, nil
+}
+
+type UserGroupView struct {
+	domain.UserGroup
+	MemberCount int `json:"member_count"`
+}
+
+func (s *UserGroupService) Create(ctx context.Context, name, description string) (domain.UserGroup, error) {
+	if name == "" || len(name) > 64 {
+		return domain.UserGroup{}, fmt.Errorf("%w: 组名必填且不超过 64 字符", ErrInvalid)
+	}
+	if len(description) > 256 {
+		return domain.UserGroup{}, fmt.Errorf("%w: 描述超过 256 字符", ErrInvalid)
+	}
+	return s.repo.CreateUserGroup(ctx, name, description, nowRFC3339())
+}
+
+// Delete 真删：连带清组授权与成员关系。
+func (s *UserGroupService) Delete(ctx context.Context, id int64) error {
+	return s.repo.DeleteUserGroup(ctx, id)
+}
+
+// Members 组内成员。
+func (s *UserGroupService) Members(ctx context.Context, groupID int64) ([]domain.User, error) {
+	if _, err := s.repo.UserGroupByID(ctx, groupID); err != nil {
+		return nil, err
+	}
+	return s.repo.GroupMembers(ctx, groupID)
+}
+
+// SetMembers 整体替换成员。成员必须是已存在的用户。
+func (s *UserGroupService) SetMembers(ctx context.Context, groupID int64, userIDs []int64) error {
+	if _, err := s.repo.UserGroupByID(ctx, groupID); err != nil {
+		return err
+	}
+	if len(userIDs) > 1000 {
+		return fmt.Errorf("%w: 成员数超过 1000", ErrInvalid)
+	}
+	return s.repo.SetGroupMembers(ctx, groupID, userIDs)
+}
+
 // GrantService 授权管理（主体：用户/用户组；目标：密钥组/单条密钥）。
 type GrantService struct {
 	repo Repo

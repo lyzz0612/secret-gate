@@ -96,4 +96,13 @@ export const api = {
     }),
   deleteGrant: (id: number) => req(`/admin/api/grants/${id}`, { method: 'DELETE' }),
   rejections: () => req('/admin/api/rejections') as Promise<Rejection[]>,
+
+  // ---- M4: 用户组 ----
+  userGroups: () => req('/admin/api/user-groups'),
+  createUserGroup: (name: string, description: string) =>
+    req('/admin/api/user-groups', { method: 'POST', body: JSON.stringify({ name, description }) }),
+  deleteUserGroup: (id: number) => req(`/admin/api/user-groups/${id}`, { method: 'DELETE' }),
+  userGroupMembers: (id: number) => req(`/admin/api/user-groups/${id}/members`) as Promise<UserRow[]>,
+  setUserGroupMembers: (id: number, userIds: number[]) =>
+    req(`/admin/api/user-groups/${id}/members`, { method: 'PUT', body: JSON.stringify({ user_ids: userIds }) }),
 }

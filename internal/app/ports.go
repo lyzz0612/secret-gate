@@ -57,6 +57,11 @@ type Repo interface {
 
 	// user groups
 	ListUserGroups(ctx context.Context) ([]domain.UserGroup, error)
+	UserGroupByID(ctx context.Context, id int64) (*domain.UserGroup, error)
+	CreateUserGroup(ctx context.Context, name, description, now string) (domain.UserGroup, error)
+	DeleteUserGroup(ctx context.Context, id int64) error
+	SetGroupMembers(ctx context.Context, groupID int64, userIDs []int64) error
+	GroupMembers(ctx context.Context, groupID int64) ([]domain.User, error)
 	UserGroupIDs(ctx context.Context, userID int64) ([]int64, error)
 
 	// grants

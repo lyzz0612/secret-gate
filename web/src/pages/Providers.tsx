@@ -255,7 +255,7 @@ function ProviderDrawer({
           </Field>
         )}
 
-        {/* 插件声明的配置字段：动态渲染 */}
+        {/* 插件声明的配置字段：动态渲染，Secret 字段遮罩 */}
         <div className="border-t border-line pt-4">
           <div className="mono-label mb-3">实例配置（由插件类型声明）</div>
           <div className="space-y-4">
@@ -263,6 +263,7 @@ function ProviderDrawer({
               <Field key={f.key} label={f.label} hint={f.help}>
                 <TextInput
                   mono
+                  type={f.secret ? 'password' : 'text'}
                   value={config[f.key] ?? ''}
                   placeholder={f.placeholder}
                   onChange={(e) => setConfig((prev) => ({ ...prev, [f.key]: e.target.value }))}

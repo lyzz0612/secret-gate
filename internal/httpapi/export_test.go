@@ -22,6 +22,7 @@ import (
 	"github.com/lyzz0612/deploy-center/internal/app"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins/github_oidc"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins/password"
 	"github.com/lyzz0612/deploy-center/internal/httpapi"
 	"github.com/lyzz0612/deploy-center/internal/infra/crypto"
 	"github.com/lyzz0612/deploy-center/internal/infra/sqlite"
@@ -128,17 +129,19 @@ func newExportEnv(t *testing.T) *exportEnv {
 
 	registry := plugins.NewRegistry()
 	registry.Register(github_oidc.New())
+	registry.Register(password.New())
 
 	h := httpapi.New(httpapi.Deps{
 		Version: "test", SchemaVersion: sqlite.SchemaVersion,
-		Login:     app.NewLoginService(testAdminPW),
-		Secrets:   app.NewSecretService(repo, sealer),
-		Identity:  app.NewIdentityService(repo, registry),
-		Providers: app.NewProviderService(repo, registry),
-		Users:     app.NewUserService(repo),
-		Grants:    app.NewGrantService(repo),
-		Export:    app.NewExportService(repo, sealer),
-		Static:    web.Dist,
+		Login:      app.NewLoginService(testAdminPW),
+		Secrets:    app.NewSecretService(repo, sealer),
+		Identity:   app.NewIdentityService(repo, registry),
+		Providers:  app.NewProviderService(repo, registry),
+		Users:      app.NewUserService(repo),
+		UserGroups: app.NewUserGroupService(repo),
+		Grants:     app.NewGrantService(repo),
+		Export:     app.NewExportService(repo, sealer),
+		Static:     web.Dist,
 		LoginRateLimit: 1000,
 	})
 	srv := httptest.NewServer(h)

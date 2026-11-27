@@ -28,6 +28,7 @@ type Deps struct {
 	Identity      *app.IdentityService
 	Providers     *app.ProviderService
 	Users         *app.UserService
+	UserGroups    *app.UserGroupService
 	Grants        *app.GrantService
 	Export        *app.ExportService
 	Static        fs.FS // web/dist
@@ -102,6 +103,13 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /admin/api/users/{id}/approve", s.requireSession(s.handleApproveUser))
 	mux.HandleFunc("DELETE /admin/api/users/{id}", s.requireSession(s.handleDeleteUser))
 	mux.HandleFunc("GET /admin/api/users/{id}/grants", s.requireSession(s.handleUserGrants))
+
+	// 用户组
+	mux.HandleFunc("GET /admin/api/user-groups", s.requireSession(s.handleListUserGroups))
+	mux.HandleFunc("POST /admin/api/user-groups", s.requireSession(s.handleCreateUserGroup))
+	mux.HandleFunc("DELETE /admin/api/user-groups/{id}", s.requireSession(s.handleDeleteUserGroup))
+	mux.HandleFunc("GET /admin/api/user-groups/{id}/members", s.requireSession(s.handleUserGroupMembers))
+	mux.HandleFunc("PUT /admin/api/user-groups/{id}/members", s.requireSession(s.handleSetUserGroupMembers))
 
 	// 授权
 	mux.HandleFunc("GET /admin/api/grants", s.requireSession(s.handleListGrants))

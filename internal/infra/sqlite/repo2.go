@@ -233,6 +233,56 @@ func (r *Repo) ListUserGroups(ctx context.Context) ([]domain.UserGroup, error) {
 	return out, rows.Err()
 }
 
+func (r *Repo) UserGroupByID(ctx context.Context, id int64) (*domain.UserGroup, error) {
+	var g domain.UserGroup
+	err := r.db.QueryRowContext(ctx, `SELECT id, name, description, created_at FROM user_groups WHERE id = ?`, id).
+		Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: 用户组 %d 不存在", app.ErrNotFound, id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user group: %w", err)
+	}
+	return &g, nil
+}
+
+func (r *Repo) CreateUserGroup(ctx context.Context, name, description, now string) (domain.UserGroup, error) {
+	res, err := r.db.ExecContext(ctx,
+		`INSERT INTO user_groups(name, description, created_at) VALUES(?, ?, ?)`, name, description, now)
+	if err != nil {
+		if isUnique(err) {
+			return domain.UserGroup{}, fmt.Errorf("%w: 用户组 %q 已存在", app.ErrConflict, name)
+		}
+		return domain.UserGroup{}, fmt.Errorf("create user group: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return domain.UserGroup{ID: id, Name: name, Description: description, CreatedAt: now}, nil
+}
+
+// DeleteUserGroup 真删：事务里清掉组授权与成员关系。
+func (r *Repo) DeleteUserGroup(ctx context.Context, id int64) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM grants WHERE subject_kind = 'group' AND subject_id = ?`, id); err != nil {
+		return fmt.Errorf("清组授权: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM user_group_members WHERE group_id = ?`, id); err != nil {
+		return fmt.Errorf("清组成员: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM user_groups WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("删用户组: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("%w: 用户组 %d 不存在", app.ErrNotFound, id)
+	}
+	return tx.Commit()
+}
+
 func (r *Repo) UserGroupIDs(ctx context.Context, userID int64) ([]int64, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT group_id FROM user_group_members WHERE user_id = ?`, userID)
 	if err != nil {
@@ -246,6 +296,48 @@ func (r *Repo) UserGroupIDs(ctx context.Context, userID int64) ([]int64, error) 
 			return nil, err
 		}
 		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// SetGroupMembers 整体替换成员（事务）。
+func (r *Repo) SetGroupMembers(ctx context.Context, groupID int64, userIDs []int64) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM user_group_members WHERE group_id = ?`, groupID); err != nil {
+		return fmt.Errorf("清成员: %w", err)
+	}
+	for _, uid := range userIDs {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO user_group_members(user_id, group_id) VALUES(?, ?)`, uid, groupID); err != nil {
+			if isUnique(err) { // 用户不存在（FK 不满足时 SQLite 报 constraint）
+				return fmt.Errorf("%w: 用户 %d 不存在", app.ErrNotFound, uid)
+			}
+			return fmt.Errorf("加成员: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// GroupMembers 组内成员（用户全量信息）。
+func (r *Repo) GroupMembers(ctx context.Context, groupID int64) ([]domain.User, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT u.id, u.provider_type, u.external_id, u.display, u.kind, u.status, u.source_id, u.created_at, u.last_seen_at
+		FROM user_group_members m JOIN users u ON u.id = m.user_id
+		WHERE m.group_id = ? ORDER BY u.id`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("group members: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *u)
 	}
 	return out, rows.Err()
 }

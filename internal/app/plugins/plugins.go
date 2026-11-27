@@ -35,6 +35,7 @@ type Parsed struct {
 	Disp   string            // 展示名
 	Kind   string            // machine | human
 	Claims map[string]string // 全部字符串化（含 iss/aud）
+	Secret string            // 口令类插件的凭证；绝不进 claims、绝不写日志
 }
 
 // PluginType 认证插件类型。

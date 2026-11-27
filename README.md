@@ -2,7 +2,7 @@
 
 自托管的轻量密钥服务：让 GitHub Actions 凭一次性的 OIDC 令牌取走自己被授权的密钥，**仓库里不再存任何长期凭据**。
 
-> 当前进度：M1–M3 完成（骨架 / 加密 / 密钥管理后台 / **GitHub OIDC 插件与 `/v1/export`**）；用户组管理、账号密码插件、部署与 README 定稿在后续里程碑，见 [docs/plan.md](docs/plan.md)。
+> 当前进度：M1–M5 完成（骨架 / 加密 / 密钥管理后台 / GitHub OIDC 插件与 `/v1/export` / 用户组授权 / 账号口令插件）；剩余部署与 README 定稿（M6），见 [docs/plan.md](docs/plan.md)。
 
 ## 快速开始（本地）
 

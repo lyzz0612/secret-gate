@@ -7,6 +7,8 @@ import { OverviewPage } from './pages/Overview'
 import { SecretsPage } from './pages/Secrets'
 import { ProvidersPage } from './pages/Providers'
 import { UsersPage } from './pages/Users'
+import { UserGroupsPage } from './pages/UserGroups'
+import { SettingsPage } from './pages/Settings'
 
 type Page = 'overview' | 'secrets' | 'grants' | 'users' | 'usergroups' | 'providers' | 'settings'
 
@@ -136,7 +138,9 @@ export default function App() {
           {page === 'secrets' && <SecretsPage onChanged={refreshOverview} />}
           {page === 'providers' && <ProvidersPage onChanged={refreshOverview} />}
           {page === 'users' && <UsersPage onChanged={refreshOverview} />}
-          {(page === 'grants' || page === 'usergroups' || page === 'settings') && <Placeholder page={page} />}
+          {page === 'usergroups' && <UserGroupsPage onChanged={refreshOverview} />}
+          {page === 'settings' && <SettingsPage />}
+          {page === 'grants' && <Placeholder page={page} />}
         </div>
       </main>
     </div>

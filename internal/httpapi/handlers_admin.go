@@ -508,3 +508,78 @@ func (s *server) handleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleRejections(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.deps.Identity.Rejections())
 }
+
+// ---------- 用户组 ----------
+
+func (s *server) handleListUserGroups(w http.ResponseWriter, r *http.Request) {
+	gs, err := s.deps.UserGroups.List(r.Context())
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, gs)
+}
+
+func (s *server) handleCreateUserGroup(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	if err := readJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	g, err := s.deps.UserGroups.Create(r.Context(), body.Name, body.Description)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, g)
+}
+
+func (s *server) handleDeleteUserGroup(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	if err := s.deps.UserGroups.Delete(r.Context(), id); err != nil {
+		mapErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) handleUserGroupMembers(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	ms, err := s.deps.UserGroups.Members(r.Context(), id)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ms)
+}
+
+func (s *server) handleSetUserGroupMembers(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	var body struct {
+		UserIDs []int64 `json:"user_ids"`
+	}
+	if err := readJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.deps.UserGroups.SetMembers(r.Context(), id, body.UserIDs); err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(body.UserIDs)})
+}
