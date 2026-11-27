@@ -5,6 +5,8 @@ import type { Overview, Status } from './types'
 import { Login } from './pages/Login'
 import { OverviewPage } from './pages/Overview'
 import { SecretsPage } from './pages/Secrets'
+import { ProvidersPage } from './pages/Providers'
+import { UsersPage } from './pages/Users'
 
 type Page = 'overview' | 'secrets' | 'grants' | 'users' | 'usergroups' | 'providers' | 'settings'
 
@@ -132,7 +134,9 @@ export default function App() {
         <div className="min-h-0 flex-1 overflow-y-auto">
           {page === 'overview' && <OverviewPage overview={overview} status={status} onGo={setPage} />}
           {page === 'secrets' && <SecretsPage onChanged={refreshOverview} />}
-          {page !== 'overview' && page !== 'secrets' && <Placeholder page={page} />}
+          {page === 'providers' && <ProvidersPage onChanged={refreshOverview} />}
+          {page === 'users' && <UsersPage onChanged={refreshOverview} />}
+          {(page === 'grants' || page === 'usergroups' || page === 'settings') && <Placeholder page={page} />}
         </div>
       </main>
     </div>

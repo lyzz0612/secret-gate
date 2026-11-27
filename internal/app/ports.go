@@ -35,8 +35,35 @@ type Repo interface {
 	PutSecret(ctx context.Context, groupID int64, key string, ciphertext, nonce, aadSalt []byte, now string) error
 	GetSecret(ctx context.Context, groupID int64, key string) (domain.SecretBlob, error)
 	DeleteSecret(ctx context.Context, groupID int64, key string) error
+	SecretByID(ctx context.Context, id int64) (*domain.SecretBlob, error)
 
 	Overview(ctx context.Context) (OverviewCounts, error)
+
+	// providers（实例）
+	ListProviders(ctx context.Context) ([]domain.ProviderInstance, error)
+	ProviderByID(ctx context.Context, id int64) (*domain.ProviderInstance, error)
+	CreateProvider(ctx context.Context, typ, name, configJSON, rulesJSON, now string) (domain.ProviderInstance, error)
+	UpdateProvider(ctx context.Context, id int64, name, configJSON, rulesJSON string, enabled bool, now string) error
+	DeleteProvider(ctx context.Context, id int64) error
+
+	// users
+	ListUsers(ctx context.Context, status string) ([]domain.User, error)
+	UserByID(ctx context.Context, id int64) (*domain.User, error)
+	UserByKey(ctx context.Context, typ, extID string) (*domain.User, error)
+	CreateUser(ctx context.Context, u domain.User) (domain.User, error)
+	SetUserStatus(ctx context.Context, id int64, status string) error
+	TouchUser(ctx context.Context, id int64, now string) error
+	DeleteUser(ctx context.Context, id int64) error
+
+	// user groups
+	ListUserGroups(ctx context.Context) ([]domain.UserGroup, error)
+	UserGroupIDs(ctx context.Context, userID int64) ([]int64, error)
+
+	// grants
+	ListGrants(ctx context.Context, subjectKind string, subjectID int64) ([]domain.Grant, error)
+	GrantsForSubjects(ctx context.Context, userID int64, groupIDs []int64) ([]domain.Grant, error)
+	CreateGrant(ctx context.Context, g domain.Grant, now string) (domain.Grant, error)
+	DeleteGrant(ctx context.Context, id int64) error
 }
 
 // OverviewCounts 总览页计数。

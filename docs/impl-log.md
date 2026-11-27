@@ -1,5 +1,56 @@
 # 实施日志
 
+## 2026-11-27 · M3：GitHub OIDC 插件 + /v1/export（MVP 核心）
+
+### 完成
+
+- **插件框架** `internal/app/plugins`：PluginType 契约（Type/Label/Match/ConfigFields/ClaimFields/Parse/Accept）+ 编译期注册表
+- **github_oidc 插件**：手写 RS256 验签（零第三方依赖）、JWKS 拉取缓存（TTL 1h、未知 kid 重拉带 10s 节流防放大）、exp/nbf 时钟窗（±60s）、claims 全量字符串化（repository_id 用 json.Number 保精度）、显式拒绝非 RS256 算法
+- **实例管理**：providers CRUD + 保存时校验（类型存在 / audience 必填 / 规则可编译）+「试一下」（贴 claims JSON → 逐条规则命中 + iss/aud 模拟核对）
+- **认证编排**：MatchTypes → Parse（每类型一次）→ 实例按 id 择优（Accept + 规则 AND）→ 被拒记环形内存（最近 50 条）
+- **用户**：`(类型, external_id)` 身份键、首次敲门建 pending、批准/删除 API、last_seen 刷新
+- **授权**：CRUD + 创建时校验主体/目标存在（不留孤儿授权）+ 删用户连带清理
+- **/v1/export**：认证 → pending 拒绝 → 授权实时展开（个人 ∪ 用户组、组含子孙）→ 解密 → JSON / env 两种格式、`?group=` 过滤、含换行的值拒绝 env 格式（防静默截断）
+- **前端**：Provider 实例页（动态表单 + 规则编辑器 + 试一下）、用户页（待批准置顶/批准/详情授权管理/被拒摘要）
+- **工具**：`tools/mintjwt` 本地假 OIDC 签发者 + 铸 token（联调用）
+
+### 测试
+
+- `go test ./...`：**5 包全绿，45 个测试函数，0 失败**
+- 新增核心覆盖（export_test.go，用 httptest RSA + 假 JWKS + 真签名的 JWT）：
+  - 全量导出 / group 过滤 / env 格式 / no-store
+  - 无 Bearer、垃圾 token、alg=none、错误签名、过期 token → 401
+  - aud 不匹配、准入规则不匹配、PR 事件 → 403，且 **aud 不匹配不建用户**
+  - 多实例择优（第一个 aud 不对、第二个对 → 选中第二个）
+  - 删授权 → 空集；删用户 → 重建 pending → 403
+  - 实例校验（未知类型/缺 audience/规则不可编译 → 400）；试一下两端
+- **真实二进制 E2E**（mintjwt 假签发者 + curl）：
+
+| 步骤 | 结果 |
+|---|---|
+| 建实例（issuer 指假签发者 + owner/event 两规则） | 201 |
+| valid 敲门 | 403 身份待批准（pending 建立量 1） |
+| 批准 + 授权 minigames 整组 | 200 |
+| 导出 | `{"secrets":{"OSS_KEY":"AKIA-E2E-LOCAL"}}` |
+| env 格式 / group 过滤 | `OSS_KEY=AKIA-E2E-LOCAL` / 子组正确 |
+| 删授权后立即导出 | 空集（实时生效） |
+| wrong_owner / wrong_aud / pr_event | 403 身份未被接受 |
+| expired | 401 令牌无效 |
+| 被拒记录接口 | 显示逐条原因 |
+
+### CI 首跑（上一轮推送触发，run 45940033572）
+
+- ✅ success：go vet + test → tag **v0.0.1** → docker build → ghcr 推送
+- ghcr 包详情查询需要 read:packages scope（token 没有），以 workflow 步骤成功为证据
+
+### 未验证 / 遗留
+
+- **真实 GitHub workflow**（token.actions.githubusercontent.com 真令牌）：服务未公网部署，待 M6 部署到 VPS 后做——这是 M3 验收的最后一块
+- 用户组管理 UI（M4）、账号密码插件（M5）、设置页、README 定稿（M6）
+- 前端 Provider/用户页的视觉细节未经真人过目，`scripts\dev.bat` 起来后自己点一遍
+
+---
+
 ## 2026-11-27 · M1+M2：骨架、加密、密钥管理后台
 
 ### 完成

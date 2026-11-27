@@ -2,7 +2,7 @@
 
 自托管的轻量密钥服务：让 GitHub Actions 凭一次性的 OIDC 令牌取走自己被授权的密钥，**仓库里不再存任何长期凭据**。
 
-> 当前进度：M1+M2（骨架 / 加密 / 密钥管理后台）已完成；GitHub OIDC 插件、用户与授权管理、Provider 实例管理在后续里程碑，见 [docs/plan.md](docs/plan.md)。
+> 当前进度：M1–M3 完成（骨架 / 加密 / 密钥管理后台 / **GitHub OIDC 插件与 `/v1/export`**）；用户组管理、账号密码插件、部署与 README 定稿在后续里程碑，见 [docs/plan.md](docs/plan.md)。
 
 ## 快速开始（本地）
 
@@ -29,7 +29,22 @@ services:
       test: ["CMD", "/vaultd", "-healthcheck"]
 ```
 
-反代到公网后，`GET /v1/export` 即为 CI 取密钥入口（需 OIDC 插件，M3 提供）。
+反代到公网后，CI 侧取密钥：
+
+```yaml
+- name: 载入密钥
+  run: |
+    TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+      "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://你的域名" | jq -r .value)
+    curl -sfS -H "Authorization: Bearer $TOKEN" \
+      "https://你的域名/v1/export?group=项目/环境&format=env" \
+      | while IFS= read -r line; do
+          echo "::add-mask::${line#*=}"
+          echo "$line" >> "$GITHUB_ENV"
+        done
+```
+
+前提：后台建一个 github_oidc 实例（audience 填你的域名、准入规则限定 owner），首次敲门出现的用户批准并授权到密钥组。本地联调可用 `go run ./tools/mintjwt` 起假签发者。
 
 ## 安全边界
 

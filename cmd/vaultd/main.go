@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/lyzz0612/deploy-center/internal/app"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins/github_oidc"
 	"github.com/lyzz0612/deploy-center/internal/httpapi"
 	"github.com/lyzz0612/deploy-center/internal/infra/crypto"
 	"github.com/lyzz0612/deploy-center/internal/infra/sqlite"
@@ -78,11 +80,20 @@ func run(args []string) error {
 		return err
 	}
 
+	// 插件注册表：加插件 = 一个包 + 这里一行
+	registry := plugins.NewRegistry()
+	registry.Register(github_oidc.New())
+
 	h := httpapi.New(httpapi.Deps{
 		Version:       version,
 		SchemaVersion: sqlite.SchemaVersion,
 		Login:         app.NewLoginService(adminPassword),
 		Secrets:       app.NewSecretService(repo, sealer),
+		Identity:      app.NewIdentityService(repo, registry),
+		Providers:     app.NewProviderService(repo, registry),
+		Users:         app.NewUserService(repo),
+		Grants:        app.NewGrantService(repo),
+		Export:        app.NewExportService(repo, sealer),
 		Static:        web.Dist,
 	})
 

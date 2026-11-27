@@ -4,18 +4,18 @@ package domain
 
 // SecretGroup 密钥分组：path 两级（"minigames" / "minigames/prod"）。
 type SecretGroup struct {
-	ID        int64
-	Path      string
-	Name      string
-	CreatedAt string
+	ID        int64  `json:"id"`
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	CreatedAt string `json:"created_at"`
 }
 
 // SecretMeta 密钥列表行：明文与密文都不出现，只有元信息。
 type SecretMeta struct {
-	ID        int64
-	GroupID   int64
-	Key       string
-	UpdatedAt string
+	ID        int64  `json:"id"`
+	GroupID   int64  `json:"group_id"`
+	Key       string `json:"key"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // SecretBlob 一条密钥的密文存储形态。
@@ -31,34 +31,43 @@ type SecretBlob struct {
 
 // Grant 一条授权：主体（用户/用户组）→ 目标（密钥组/单条密钥）。
 type Grant struct {
-	ID          int64
-	SubjectKind string // "user" | "group"
-	SubjectID   int64
-	TargetKind  string // "group" | "secret"
-	TargetID    int64
+	ID          int64  `json:"id"`
+	SubjectKind string `json:"subject_kind"`
+	SubjectID   int64  `json:"subject_id"`
+	TargetKind  string `json:"target_kind"`
+	TargetID    int64  `json:"target_id"`
+	CreatedAt   string `json:"created_at"`
 }
 
 // User 被认证的主体（机器或人），身份键 = (ProviderType, ExternalID)。
 type User struct {
-	ID           int64
-	ProviderType string
-	ExternalID   string
-	Display      string
-	Kind         string // "machine" | "human"
-	Status       string // "pending" | "active"
-	SourceID     int64
-	CreatedAt    string
-	LastSeenAt   string
+	ID           int64  `json:"id"`
+	ProviderType string `json:"provider_type"`
+	ExternalID   string `json:"external_id"`
+	Display      string `json:"display"`
+	Kind         string `json:"kind"`         // "machine" | "human"
+	Status       string `json:"status"`       // "pending" | "active"
+	SourceID     int64  `json:"source_id"`
+	CreatedAt    string `json:"created_at"`
+	LastSeenAt   string `json:"last_seen_at"`
 }
 
 // ProviderInstance 某插件类型的一个实例：一份配置 + 一套准入规则。
 type ProviderInstance struct {
-	ID         int64
-	Type       string
-	Name       string
-	Enabled    bool
-	ConfigJSON string
-	RulesJSON  string
-	CreatedAt  string
-	UpdatedAt  string
+	ID         int64  `json:"id"`
+	Type       string `json:"type"`
+	Name       string `json:"name"`
+	Enabled    bool   `json:"enabled"`
+	ConfigJSON string `json:"config_json"`
+	RulesJSON  string `json:"rules_json"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
+}
+
+// UserGroup 用户分组，用来批量发授权。
+type UserGroup struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	CreatedAt   string `json:"created_at"`
 }

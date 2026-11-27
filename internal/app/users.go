@@ -1,0 +1,152 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/lyzz0612/deploy-center/internal/domain"
+)
+
+// UserService 用户管理：批准、删除、查授权。
+type UserService struct {
+	repo Repo
+}
+
+func NewUserService(repo Repo) *UserService { return &UserService{repo: repo} }
+
+func (s *UserService) List(ctx context.Context, status string) ([]domain.User, error) {
+	if status != "" && status != "pending" && status != "active" {
+		return nil, fmt.Errorf("%w: status 只能是 pending / active", ErrInvalid)
+	}
+	return s.repo.ListUsers(ctx, status)
+}
+
+func (s *UserService) Get(ctx context.Context, id int64) (*domain.User, error) {
+	return s.repo.UserByID(ctx, id)
+}
+
+// Approve pending → active。
+func (s *UserService) Approve(ctx context.Context, id int64) error {
+	u, err := s.repo.UserByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if u.Status != "pending" {
+		return fmt.Errorf("%w: 当前状态 %s 不可批准", ErrInvalid, u.Status)
+	}
+	return s.repo.SetUserStatus(ctx, id, "active")
+}
+
+// Delete 真删，连带清授权与组成员关系。
+func (s *UserService) Delete(ctx context.Context, id int64) error {
+	return s.repo.DeleteUser(ctx, id)
+}
+
+// GrantsOf 用户个人授权 + 所在用户组的授权。
+func (s *UserService) GrantsOf(ctx context.Context, id int64) ([]domain.Grant, error) {
+	if _, err := s.repo.UserByID(ctx, id); err != nil {
+		return nil, err
+	}
+	return s.repo.ListGrants(ctx, "user", id)
+}
+
+// GroupsOf 用户所在用户组。
+func (s *UserService) GroupsOf(ctx context.Context, id int64) ([]domain.UserGroup, error) {
+	ids, err := s.repo.UserGroupIDs(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	all, err := s.repo.ListUserGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	idset := map[int64]bool{}
+	for _, i := range ids {
+		idset[i] = true
+	}
+	var out []domain.UserGroup
+	for _, g := range all {
+		if idset[g.ID] {
+			out = append(out, g)
+		}
+	}
+	return out, nil
+}
+
+// GrantService 授权管理（主体：用户/用户组；目标：密钥组/单条密钥）。
+type GrantService struct {
+	repo Repo
+}
+
+func NewGrantService(repo Repo) *GrantService { return &GrantService{repo: repo} }
+
+func (s *GrantService) List(ctx context.Context, subjectKind string, subjectID int64) ([]domain.Grant, error) {
+	if subjectKind != "" && subjectKind != "user" && subjectKind != "group" {
+		return nil, fmt.Errorf("%w: subject_kind 只能是 user / group", ErrInvalid)
+	}
+	return s.repo.ListGrants(ctx, subjectKind, subjectID)
+}
+
+// Create 校验主体与目标都真实存在（不留孤儿授权），再落库。
+func (s *GrantService) Create(ctx context.Context, subjectKind string, subjectID int64, targetKind string, targetID int64) (domain.Grant, error) {
+	if subjectKind != "user" && subjectKind != "group" {
+		return domain.Grant{}, fmt.Errorf("%w: subject_kind 只能是 user / group", ErrInvalid)
+	}
+	if targetKind != "group" && targetKind != "secret" {
+		return domain.Grant{}, fmt.Errorf("%w: target_kind 只能是 group / secret", ErrInvalid)
+	}
+	// 主体存在性
+	if subjectKind == "user" {
+		if _, err := s.repo.UserByID(ctx, subjectID); err != nil {
+			return domain.Grant{}, err
+		}
+	} else {
+		found := false
+		gs, err := s.repo.ListUserGroups(ctx)
+		if err != nil {
+			return domain.Grant{}, err
+		}
+		for _, g := range gs {
+			if g.ID == subjectID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return domain.Grant{}, fmt.Errorf("%w: 用户组 %d 不存在", ErrNotFound, subjectID)
+		}
+	}
+	// 目标存在性
+	if targetKind == "group" {
+		gs, err := s.repo.ListGroups(ctx)
+		if err != nil {
+			return domain.Grant{}, err
+		}
+		found := false
+		for _, g := range gs {
+			if g.ID == targetID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return domain.Grant{}, fmt.Errorf("%w: 密钥组 %d 不存在", ErrNotFound, targetID)
+		}
+	} else {
+		if _, err := s.repo.SecretByID(ctx, targetID); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return domain.Grant{}, fmt.Errorf("%w: 密钥 %d 不存在", ErrNotFound, targetID)
+			}
+			return domain.Grant{}, err
+		}
+	}
+	return s.repo.CreateGrant(ctx, domain.Grant{
+		SubjectKind: subjectKind, SubjectID: subjectID,
+		TargetKind: targetKind, TargetID: targetID,
+	}, nowRFC3339())
+}
+
+func (s *GrantService) Delete(ctx context.Context, id int64) error {
+	return s.repo.DeleteGrant(ctx, id)
+}

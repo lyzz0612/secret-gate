@@ -25,6 +25,11 @@ type Deps struct {
 	SchemaVersion int
 	Login         *app.LoginService
 	Secrets       *app.SecretService
+	Identity      *app.IdentityService
+	Providers     *app.ProviderService
+	Users         *app.UserService
+	Grants        *app.GrantService
+	Export        *app.ExportService
 	Static        fs.FS // web/dist
 
 	// 登录限流（测试可注入）；零值 = 每 IP 每分钟 10 次
@@ -82,9 +87,32 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /admin/api/groups/{id}/secrets/{key}/reveal", s.requireSession(s.handleRevealSecret))
 	mux.HandleFunc("DELETE /admin/api/groups/{id}/secrets/{key}", s.requireSession(s.handleDeleteSecret))
 
-	// 插件类型 / Provider 实例（M5 完整实现，先给出空清单占位）
+	// 插件类型 / Provider 实例
 	mux.HandleFunc("GET /admin/api/plugins", s.requireSession(s.handleListPlugins))
 	mux.HandleFunc("GET /admin/api/providers", s.requireSession(s.handleListProviders))
+	mux.HandleFunc("POST /admin/api/providers", s.requireSession(s.handleCreateProvider))
+	mux.HandleFunc("PATCH /admin/api/providers/{id}", s.requireSession(s.handleUpdateProvider))
+	mux.HandleFunc("DELETE /admin/api/providers/{id}", s.requireSession(s.handleDeleteProvider))
+	mux.HandleFunc("POST /admin/api/providers/{id}/test", s.requireSession(s.handleTestProvider))
+
+	// 用户
+	mux.HandleFunc("GET /admin/api/users", s.requireSession(s.handleListUsers))
+	mux.HandleFunc("GET /admin/api/users/{id}", s.requireSession(s.handleGetUser))
+	mux.HandleFunc("PATCH /admin/api/users/{id}", s.requireSession(s.handlePatchUser))
+	mux.HandleFunc("POST /admin/api/users/{id}/approve", s.requireSession(s.handleApproveUser))
+	mux.HandleFunc("DELETE /admin/api/users/{id}", s.requireSession(s.handleDeleteUser))
+	mux.HandleFunc("GET /admin/api/users/{id}/grants", s.requireSession(s.handleUserGrants))
+
+	// 授权
+	mux.HandleFunc("GET /admin/api/grants", s.requireSession(s.handleListGrants))
+	mux.HandleFunc("POST /admin/api/grants", s.requireSession(s.handleCreateGrant))
+	mux.HandleFunc("DELETE /admin/api/grants/{id}", s.requireSession(s.handleDeleteGrant))
+
+	// 被拒记录
+	mux.HandleFunc("GET /admin/api/rejections", s.requireSession(s.handleRejections))
+
+	// CI 侧导出
+	mux.HandleFunc("GET /v1/export", s.handleExport)
 
 	// SPA
 	mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {

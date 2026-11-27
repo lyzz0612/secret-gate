@@ -4,6 +4,8 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+
+	"github.com/lyzz0612/deploy-center/internal/domain"
 )
 // ---------- 登录 / 会话 ----------
 
@@ -255,12 +257,254 @@ func (s *server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ---------- 插件类型 / Provider 实例（M5 实现，先占位） ----------
+// ---------- 插件类型 / Provider 实例 ----------
 
 func (s *server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, []any{})
+	writeJSON(w, http.StatusOK, s.deps.Providers.ListTypes())
 }
 
 func (s *server) handleListProviders(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, []any{})
+	ps, err := s.deps.Providers.List(r.Context())
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ps)
+}
+
+type providerBody struct {
+	Type   string          `json:"type"`
+	Name   string          `json:"name"`
+	Enabled *bool          `json:"enabled"`
+	Config map[string]any  `json:"config"`
+	Rules  []domain.Rule   `json:"rules"`
+}
+
+func (s *server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
+	var body providerBody
+	if err := readJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	p, err := s.deps.Providers.Create(r.Context(), body.Type, body.Name, body.Config, body.Rules)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, p)
+}
+
+func (s *server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	var body providerBody
+	if err := readJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	enabled := body.Enabled == nil || *body.Enabled
+	if err := s.deps.Providers.Update(r.Context(), id, body.Name, enabled, body.Config, body.Rules); err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	if err := s.deps.Providers.Delete(r.Context(), id); err != nil {
+		mapErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	var body struct {
+		Claims map[string]string `json:"claims"`
+	}
+	if err := readJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	res, err := s.deps.Providers.Test(r.Context(), id, body.Claims)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// ---------- 用户 ----------
+
+func (s *server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	us, err := s.deps.Users.List(r.Context(), r.URL.Query().Get("status"))
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(us))
+	for _, u := range us {
+		out = append(out, map[string]any{
+			"id": u.ID, "provider_type": u.ProviderType, "external_id": u.ExternalID,
+			"display": u.Display, "kind": u.Kind, "status": u.Status,
+			"source_id": u.SourceID, "created_at": u.CreatedAt, "last_seen_at": u.LastSeenAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) handleGetUser(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	u, err := s.deps.Users.Get(r.Context(), id)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	grants, _ := s.deps.Users.GrantsOf(r.Context(), id)
+	groups, _ := s.deps.Users.GroupsOf(r.Context(), id)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user": u, "grants": grants, "user_groups": groups,
+	})
+}
+
+func (s *server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := readJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	switch body.Status {
+	case "active":
+		if err := s.deps.Users.Approve(r.Context(), id); err != nil {
+			mapErr(w, err)
+			return
+		}
+	default:
+		writeErr(w, http.StatusBadRequest, "status 只支持 active（批准）")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *server) handleApproveUser(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	if err := s.deps.Users.Approve(r.Context(), id); err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	if err := s.deps.Users.Delete(r.Context(), id); err != nil {
+		mapErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) handleUserGrants(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	gs, err := s.deps.Users.GrantsOf(r.Context(), id)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, gs)
+}
+
+// ---------- 授权 ----------
+
+func (s *server) handleListGrants(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var subjectID int64
+	if v := q.Get("subject_id"); v != "" {
+		var err error
+		subjectID, err = strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "subject_id 不合法")
+			return
+		}
+	}
+	gs, err := s.deps.Grants.List(r.Context(), q.Get("subject_kind"), subjectID)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, gs)
+}
+
+func (s *server) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SubjectKind string `json:"subject_kind"`
+		SubjectID   int64  `json:"subject_id"`
+		TargetKind  string `json:"target_kind"`
+		TargetID    int64  `json:"target_id"`
+	}
+	if err := readJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	g, err := s.deps.Grants.Create(r.Context(), body.SubjectKind, body.SubjectID, body.TargetKind, body.TargetID)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, g)
+}
+
+func (s *server) handleDeleteGrant(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 不合法")
+		return
+	}
+	if err := s.deps.Grants.Delete(r.Context(), id); err != nil {
+		mapErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------- 被拒记录 ----------
+
+func (s *server) handleRejections(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.deps.Identity.Rejections())
 }
