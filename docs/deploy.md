@@ -64,14 +64,16 @@ curl http://127.0.0.1:8788/healthz
 
 ## 5. 首次接入一个仓库（闭环验证）
 
-1. 浏览器打开 `https://secrets.example.com/admin/`，用 `ADMIN_PASSWORD` 登录
+1. 浏览器打开 `https://secret-gate.skyup.top/admin/`，用 `ADMIN_PASSWORD` 登录
 2. **接入 → 新建实例**：类型 `GitHub Actions (OIDC)`（无配置项），准入规则建议三条：
-   - `aud` = `^https://secrets.example.com$`（防令牌重放到别处，值 = 你的对外地址）
-   - `repository_owner` = `^你的用户名$`
+   - `aud` = `^https://secret-gate.skyup.top$`（防令牌重放到别处）
+   - `repository_owner` = `^lyzz0612$`
    - `event_name` = `^(push|workflow_dispatch|release)$`
 3. **密钥**：建组（如 `minigames/prod`）并录入第一条密钥
-4. 在目标仓库 workflow 里跑一次敲门（README 的接入片段）→ **用户页**自动登记该仓库 → **授权页**建授权（身份 → 密钥组）
-5. 再跑一次 workflow → 应看到密钥已写入环境变量
+4. Actions 页手动跑 **「Secret Gate 自测」** workflow（`.github/workflows/selftest.yml`）——
+   它会打 `/healthz`、取真 OIDC 令牌、调 `/v1/export`，按失败信息对号入座
+5. 第一次多半是「200 但 0 条」：认证准入都通了，只差授权——**授权**页给 `lyzz0612/deploy-center` 授一个密钥组，再跑一次自测应全绿
+6. 其他仓库接入：抄 README 里的 workflow 片段，audience 一致
 
 ## 6. 升级
 

@@ -56,7 +56,7 @@ jobs:
               done
 ```
 
-首次运行会在后台「用户」页自动登记该仓库身份——授个权，再跑一次即拿到密钥。非 GitHub 调用方可建 `账号口令` 实例，用 Basic auth 走同一出口。
+首次运行会在后台「用户」页自动登记该仓库身份——授个权，再跑一次即拿到密钥。**本仓库自带「Secret Gate 自测」workflow**（Actions 页手动触发，地址写死 `https://secret-gate.skyup.top`）：打 healthz、取真 OIDC 令牌、调 `/v1/export`，失败信息会指明是部署、验签、准入还是授权的问题。非 GitHub 调用方可建 `账号口令` 实例，用 Basic auth 走同一出口。
 
 ## 概念（三层）
 
