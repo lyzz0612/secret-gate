@@ -286,9 +286,8 @@ func (r *Repo) Overview(ctx context.Context) (app.OverviewCounts, error) {
 		(SELECT COUNT(*) FROM secret_groups),
 		(SELECT COUNT(*) FROM secrets),
 		(SELECT COUNT(*) FROM users),
-		(SELECT COUNT(*) FROM users WHERE status = 'pending'),
 		(SELECT COUNT(*) FROM providers)`).
-		Scan(&c.Groups, &c.Secrets, &c.Users, &c.Pending, &c.Providers)
+		Scan(&c.Groups, &c.Secrets, &c.Users, &c.Providers)
 	if err != nil {
 		return c, fmt.Errorf("overview: %w", err)
 	}

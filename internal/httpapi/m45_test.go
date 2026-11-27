@@ -118,16 +118,16 @@ func TestPasswordPlugin(t *testing.T) {
 		t.Fatalf("建实例 = %d %s", code, out)
 	}
 
-	// 敲门：正确口令 → pending 用户（password:ci-runner）
+	// 敲门：正确口令 → 过准入即自动登记（无授权 = 空集 200）
 	code, out = e.exportBasic("ci-runner", "s3cret-pass", "")
-	if code != 403 || !strings.Contains(out, "待批准") {
-		t.Fatalf("正确口令首次应 403 待批准 = %d %s", code, out)
+	if code != 200 || !strings.Contains(out, `"secrets":{}`) {
+		t.Fatalf("正确口令首次应 200 空集 = %d %s", code, out)
 	}
-	_, out = e.api("GET", "/admin/api/users?status=pending", nil)
+	_, out = e.api("GET", "/admin/api/users", nil)
 	var users []map[string]any
 	json.Unmarshal([]byte(out), &users)
 	if len(users) != 1 || users[0]["provider_type"] != "password" {
-		t.Fatalf("应有一个 password 用户 = %s", out)
+		t.Fatalf("应自动登记一个 password 用户 = %s", out)
 	}
 	uid := int64(users[0]["id"].(float64))
 
@@ -142,10 +142,12 @@ func TestPasswordPlugin(t *testing.T) {
 		t.Errorf("错口令不应建用户, = %s", out)
 	}
 
-	// 准备密钥 + 批准 + 授权
+	// 准备密钥 + 授权（seed 用 JWT 敲门，需要 github 实例在场）
+	e.createInstance("我的个人号", e.aud, []map[string]string{
+		{"field": "repository_owner", "pattern": "^lyzz0612$"},
+	})
 	_, gID := e.seed()
-	// seed 会建一个 github 用户并敲门 —— 它用的是 JWT；这里给 password 用户授权
-	e.api("POST", fmt.Sprintf("/admin/api/users/%d/approve", uid), map[string]string{})
+	// seed 会登记一个 github 用户；这里给 password 用户授权
 	e.api("POST", "/admin/api/grants", map[string]any{
 		"subject_kind": "user", "subject_id": uid, "target_kind": "group", "target_id": gID,
 	})

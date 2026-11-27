@@ -350,7 +350,7 @@ func (s *server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
 // ---------- 用户 ----------
 
 func (s *server) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	us, err := s.deps.Users.List(r.Context(), r.URL.Query().Get("status"))
+	us, err := s.deps.Users.List(r.Context())
 	if err != nil {
 		mapErr(w, err)
 		return
@@ -359,7 +359,7 @@ func (s *server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	for _, u := range us {
 		out = append(out, map[string]any{
 			"id": u.ID, "provider_type": u.ProviderType, "external_id": u.ExternalID,
-			"display": u.Display, "kind": u.Kind, "status": u.Status,
+			"display": u.Display, "kind": u.Kind,
 			"source_id": u.SourceID, "created_at": u.CreatedAt, "last_seen_at": u.LastSeenAt,
 		})
 	}
@@ -382,45 +382,6 @@ func (s *server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user": u, "grants": grants, "user_groups": groups,
 	})
-}
-
-func (s *server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "id 不合法")
-		return
-	}
-	var body struct {
-		Status string `json:"status"`
-	}
-	if err := readJSON(w, r, &body); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	switch body.Status {
-	case "active":
-		if err := s.deps.Users.Approve(r.Context(), id); err != nil {
-			mapErr(w, err)
-			return
-		}
-	default:
-		writeErr(w, http.StatusBadRequest, "status 只支持 active（批准）")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-func (s *server) handleApproveUser(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "id 不合法")
-		return
-	}
-	if err := s.deps.Users.Approve(r.Context(), id); err != nil {
-		mapErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {

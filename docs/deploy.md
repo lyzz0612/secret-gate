@@ -70,7 +70,7 @@ curl http://127.0.0.1:8788/healthz
    - `repository_owner` = `^你的用户名$`
    - `event_name` = `^(push|workflow_dispatch|release)$`
 3. **密钥**：建组（如 `minigames/prod`）并录入第一条密钥
-4. 在目标仓库 workflow 里跑一次敲门（README 的接入片段）→ **用户页**出现待批准身份 → 批准 → **授权页**建授权（身份 → 密钥组）
+4. 在目标仓库 workflow 里跑一次敲门（README 的接入片段）→ **用户页**自动登记该仓库 → **授权页**建授权（身份 → 密钥组）
 5. 再跑一次 workflow → 应看到密钥已写入环境变量
 
 ## 6. 升级

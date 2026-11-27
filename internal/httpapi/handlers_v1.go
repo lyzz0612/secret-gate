@@ -10,8 +10,8 @@ import (
 )
 
 // handleExport CI 侧唯一取密钥入口。
-// 认证链：插件 Parse（401）→ 实例 Accept + 准入规则（403，不建用户）
-// → 用户 pending 拒绝（403）→ 授权展开 → 解密。
+// 认证链：插件 Parse（401）→ 实例准入规则（403，不建用户）
+// → 自动登记用户 → 授权实时展开（无授权 = 空集 200）→ 解密。
 // ?group=path 只导该 path 及子孙；?format=env 输出 KEY=VALUE 行。
 func (s *server) handleExport(w http.ResponseWriter, r *http.Request) {
 	outcome, err := s.deps.Identity.Authenticate(r.Context(), r)
@@ -30,10 +30,6 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request) {
 	u, _, err := s.deps.Identity.ResolveUser(r.Context(), outcome)
 	if err != nil {
 		mapErr(w, err)
-		return
-	}
-	if u.Status != "active" {
-		writeErr(w, http.StatusForbidden, "身份待批准")
 		return
 	}
 

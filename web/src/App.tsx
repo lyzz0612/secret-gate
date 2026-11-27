@@ -75,7 +75,6 @@ export default function App() {
               {sec.group && <div className="mono-label px-2 pb-1.5 pt-2">{sec.group}</div>}
               {sec.items.map((item) => {
                 const active = page === item.page
-                const showPending = item.page === 'users' && (overview?.pending ?? 0) > 0
                 return (
                   <button
                     key={item.page}
@@ -85,12 +84,8 @@ export default function App() {
                       active ? 'bg-surface2 text-accent' : 'text-muted hover:bg-surface2/60 hover:text-text',
                     )}
                   >
-                    {showPending && <span className="breathe absolute left-0 top-1 bottom-1 w-[2px] bg-warn" />}
                     <span className={cn('ml-0.5 inline-block h-1 w-1', active ? 'bg-accent' : 'bg-line2')} />
                     {item.label}
-                    {showPending && (
-                      <span className="ml-auto font-mono text-[11px] text-warn">{overview!.pending}</span>
-                    )}
                   </button>
                 )
               })}

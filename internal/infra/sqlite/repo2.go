@@ -99,7 +99,7 @@ func scanUser(row interface{ Scan(...any) error }) (*domain.User, error) {
 	var u domain.User
 	var sourceID sql.NullInt64
 	var lastSeen sql.NullString
-	if err := row.Scan(&u.ID, &u.ProviderType, &u.ExternalID, &u.Display, &u.Kind, &u.Status, &sourceID, &u.CreatedAt, &lastSeen); err != nil {
+	if err := row.Scan(&u.ID, &u.ProviderType, &u.ExternalID, &u.Display, &u.Kind, &sourceID, &u.CreatedAt, &lastSeen); err != nil {
 		return nil, err
 	}
 	u.SourceID = sourceID.Int64
@@ -107,17 +107,10 @@ func scanUser(row interface{ Scan(...any) error }) (*domain.User, error) {
 	return &u, nil
 }
 
-const userCols = `id, provider_type, external_id, display, kind, status, source_id, created_at, last_seen_at`
+const userCols = `id, provider_type, external_id, display, kind, source_id, created_at, last_seen_at`
 
-func (r *Repo) ListUsers(ctx context.Context, status string) ([]domain.User, error) {
-	q := `SELECT ` + userCols + ` FROM users`
-	args := []any{}
-	if status != "" {
-		q += ` WHERE status = ?`
-		args = append(args, status)
-	}
-	q += ` ORDER BY id DESC`
-	rows, err := r.db.QueryContext(ctx, q, args...)
+func (r *Repo) ListUsers(ctx context.Context) ([]domain.User, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
@@ -164,25 +157,13 @@ func (r *Repo) CreateUser(ctx context.Context, u domain.User) (domain.User, erro
 	}
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO users(provider_type, external_id, display, kind, status, source_id, created_at, last_seen_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.ProviderType, u.ExternalID, u.Display, u.Kind, u.Status, sourceID, u.CreatedAt, u.LastSeenAt)
+		 VALUES(?, ?, ?, ?, 'active', ?, ?, ?)`,
+		u.ProviderType, u.ExternalID, u.Display, u.Kind, sourceID, u.CreatedAt, u.LastSeenAt)
 	if err != nil {
 		return domain.User{}, fmt.Errorf("create user: %w", err)
 	}
 	u.ID, _ = res.LastInsertId()
 	return u, nil
-}
-
-func (r *Repo) SetUserStatus(ctx context.Context, id int64, status string) error {
-	res, err := r.db.ExecContext(ctx, `UPDATE users SET status = ? WHERE id = ?`, status, id)
-	if err != nil {
-		return fmt.Errorf("set user status: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("%w: 用户 %d 不存在", app.ErrNotFound, id)
-	}
-	return nil
 }
 
 func (r *Repo) TouchUser(ctx context.Context, id int64, now string) error {
@@ -324,7 +305,7 @@ func (r *Repo) SetGroupMembers(ctx context.Context, groupID int64, userIDs []int
 
 // GroupMembers 组内成员（用户全量信息）。
 func (r *Repo) GroupMembers(ctx context.Context, groupID int64) ([]domain.User, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT u.id, u.provider_type, u.external_id, u.display, u.kind, u.status, u.source_id, u.created_at, u.last_seen_at
+	rows, err := r.db.QueryContext(ctx, `SELECT u.id, u.provider_type, u.external_id, u.display, u.kind, u.source_id, u.created_at, u.last_seen_at
 		FROM user_group_members m JOIN users u ON u.id = m.user_id
 		WHERE m.group_id = ? ORDER BY u.id`, groupID)
 	if err != nil {

@@ -47,11 +47,10 @@ type Repo interface {
 	DeleteProvider(ctx context.Context, id int64) error
 
 	// users
-	ListUsers(ctx context.Context, status string) ([]domain.User, error)
+	ListUsers(ctx context.Context) ([]domain.User, error)
 	UserByID(ctx context.Context, id int64) (*domain.User, error)
 	UserByKey(ctx context.Context, typ, extID string) (*domain.User, error)
 	CreateUser(ctx context.Context, u domain.User) (domain.User, error)
-	SetUserStatus(ctx context.Context, id int64, status string) error
 	TouchUser(ctx context.Context, id int64, now string) error
 	DeleteUser(ctx context.Context, id int64) error
 
@@ -76,6 +75,5 @@ type OverviewCounts struct {
 	Groups    int64 `json:"groups"`
 	Secrets   int64 `json:"secrets"`
 	Users     int64 `json:"users"`
-	Pending   int64 `json:"pending"`
 	Providers int64 `json:"providers"`
 }

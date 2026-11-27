@@ -16,7 +16,6 @@ export interface Overview {
   groups: number
   secrets: number
   users: number
-  pending: number
   providers: number
 }
 
@@ -72,7 +71,6 @@ export interface UserRow {
   external_id: string
   display: string
   kind: string
-  status: string
   source_id: number
   created_at: string
   last_seen_at: string

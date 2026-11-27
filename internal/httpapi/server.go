@@ -99,8 +99,6 @@ func (s *server) routes() http.Handler {
 	// 用户
 	mux.HandleFunc("GET /admin/api/users", s.requireSession(s.handleListUsers))
 	mux.HandleFunc("GET /admin/api/users/{id}", s.requireSession(s.handleGetUser))
-	mux.HandleFunc("PATCH /admin/api/users/{id}", s.requireSession(s.handlePatchUser))
-	mux.HandleFunc("POST /admin/api/users/{id}/approve", s.requireSession(s.handleApproveUser))
 	mux.HandleFunc("DELETE /admin/api/users/{id}", s.requireSession(s.handleDeleteUser))
 	mux.HandleFunc("GET /admin/api/users/{id}/grants", s.requireSession(s.handleUserGrants))
 

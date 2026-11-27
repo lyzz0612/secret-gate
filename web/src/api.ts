@@ -82,9 +82,8 @@ export const api = {
     req(`/admin/api/providers/${id}/test`, { method: 'POST', body: JSON.stringify({ claims }) }),
 
   // ---- M3: 用户与授权 ----
-  users: (status?: string) => req(`/admin/api/users${status ? `?status=${status}` : ''}`) as Promise<UserRow[]>,
+  users: () => req('/admin/api/users') as Promise<UserRow[]>,
   userDetail: (id: number) => req(`/admin/api/users/${id}`),
-  approveUser: (id: number) => req(`/admin/api/users/${id}/approve`, { method: 'POST', body: '{}' }),
   deleteUser: (id: number) => req(`/admin/api/users/${id}`, { method: 'DELETE' }),
   userGrants: (id: number) => req(`/admin/api/users/${id}/grants`) as Promise<Grant[]>,
   grants: (subjectKind?: string, subjectId?: number) =>

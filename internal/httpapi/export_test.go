@@ -257,24 +257,24 @@ func (e *exportEnv) seed() (userID int64, groupID int64) {
 	e.api("POST", fmt.Sprintf("/admin/api/groups/%d/secrets", g2.ID), map[string]string{"key": "OSS_KEY", "value": "AKIA-EXPORT-TEST"})
 	e.api("POST", fmt.Sprintf("/admin/api/groups/%d/secrets", g1.ID), map[string]string{"key": "ROOT_KEY", "value": "ROOT-VAL"})
 
-	// 用合法 token 敲一次门 → 建 pending 用户
+	// 用合法 token 敲一次门 → 过准入即自动登记（无授权 = 空集 200）
 	tok := mintJWT(e.t, e.key, e.kid, defaultClaims(e.issuer, e.aud))
 	code, out = e.export(tok, "")
-	if code != 403 {
-		e.t.Fatalf("首次敲门应 403（pending），got %d %s", code, out)
+	if code != 200 || !strings.Contains(out, `"secrets":{}`) {
+		e.t.Fatalf("首次敲门应 200 空集, got %d %s", code, out)
 	}
-	// 找到用户 id
-	code, out = e.api("GET", "/admin/api/users?status=pending", nil)
+	// 找到本次登记的 github 用户（按身份键，不数总数——调用方可能已有别的用户）
+	code, out = e.api("GET", "/admin/api/users", nil)
 	var users []map[string]any
 	json.Unmarshal([]byte(out), &users)
-	if len(users) != 1 {
-		e.t.Fatalf("应有 1 个 pending 用户, got %s", out)
+	var uid int64 = -1
+	for _, u := range users {
+		if u["provider_type"] == "github_oidc" && fmt.Sprint(u["external_id"]) == "987654321" {
+			uid = int64(u["id"].(float64))
+		}
 	}
-	uid := int64(users[0]["id"].(float64))
-	// 批准
-	code, out = e.api("POST", fmt.Sprintf("/admin/api/users/%d/approve", uid), map[string]string{})
-	if code != 200 {
-		e.t.Fatalf("批准失败 %d %s", code, out)
+	if uid == -1 {
+		e.t.Fatalf("github 用户未自动登记, users = %s", out)
 	}
 	// 授权给父组（含子孙）
 	code, out = e.api("POST", "/admin/api/grants", map[string]any{
@@ -481,13 +481,13 @@ func TestExport_RevokeAndUserDelete(t *testing.T) {
 		t.Errorf("删授权后应空集 = %d %s", code, out)
 	}
 
-	// 删用户 → 下次敲门重建 pending → 403
+	// 删用户 → 下次敲门重新登记（无授权 = 空集 200）
 	if code, _ := e.api("DELETE", fmt.Sprintf("/admin/api/users/%d", uid), nil); code != 204 {
 		t.Fatalf("删用户失败")
 	}
 	code, out = e.export(tok, "")
-	if code != 403 {
-		t.Errorf("删用户后应重建 pending → 403, got %d %s", code, out)
+	if code != 200 || !strings.Contains(out, `"secrets":{}`) {
+		t.Errorf("删用户后应重新登记且空集 = %d %s", code, out)
 	}
 }
 

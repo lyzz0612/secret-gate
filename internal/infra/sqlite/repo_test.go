@@ -207,15 +207,15 @@ func TestOverview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Groups != 0 || c.Secrets != 0 || c.Users != 0 || c.Pending != 0 || c.Providers != 0 {
+	if c.Groups != 0 || c.Secrets != 0 || c.Users != 0 || c.Providers != 0 {
 		t.Errorf("空库计数 = %+v", c)
 	}
 	r.CreateGroup(ctx, "a", "a", "now")
 	r.PutSecret(ctx, 1, "K", []byte("c"), []byte("n"), []byte("s"), "t")
-	r.db.Exec("INSERT INTO users(provider_type, external_id, display, kind, status, created_at) VALUES('github_oidc', '1', 'd', 'machine', 'pending', 't')")
+	r.db.Exec("INSERT INTO users(provider_type, external_id, display, kind, created_at) VALUES('github_oidc', '1', 'd', 'machine', 't')")
 	r.db.Exec("INSERT INTO providers(type, name, created_at, updated_at) VALUES('github_oidc', 'p', 't', 't')")
 	c, _ = r.Overview(ctx)
-	if c.Groups != 1 || c.Secrets != 1 || c.Users != 1 || c.Pending != 1 || c.Providers != 1 {
+	if c.Groups != 1 || c.Secrets != 1 || c.Users != 1 || c.Providers != 1 {
 		t.Errorf("计数 = %+v", c)
 	}
 }

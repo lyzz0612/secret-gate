@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api'
 import type { Grant, Group, UserRow } from '../types'
-import { Btn, Confirm, Drawer, ErrorText, Field, cn } from '../ui'
+import { Btn, Confirm, Drawer, ErrorText, Field } from '../ui'
 
 export function UsersPage({ onChanged }: { onChanged: () => void }) {
-  const [filter, setFilter] = useState<'pending' | 'all'>('pending')
   const [users, setUsers] = useState<UserRow[]>([])
   const [rejections, setRejections] = useState<{ display: string; reason: string; ts: string }[]>([])
   const [err, setErr] = useState('')
@@ -14,10 +13,8 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
 
   const load = async () => {
     try {
-      const us = await api.users(filter === 'pending' ? 'pending' : undefined)
-      setUsers(us)
-      const rs = await api.rejections()
-      setRejections(rs)
+      setUsers(await api.users())
+      setRejections(await api.rejections())
       setErr('')
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : '加载失败')
@@ -25,36 +22,13 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
   }
   useEffect(() => {
     void load()
-  }, [filter])
-
-  const approve = async (u: UserRow) => {
-    try {
-      await api.approveUser(u.id)
-      await load()
-      onChanged()
-    } catch (e) {
-      setErr(e instanceof ApiError ? e.message : '批准失败')
-    }
-  }
+  }, [])
 
   return (
     <div className="mx-auto max-w-[1000px] px-8 py-6">
       <div className="mb-4 flex items-center gap-2">
         <div className="mono-label">USERS</div>
-        <div className="flex border border-line">
-          {(['pending', 'all'] as const).map((f) => (
-            <button
-              key={f}
-              className={cn(
-                'px-3 py-1 text-[12px] transition-colors',
-                filter === f ? 'bg-surface2 text-accent' : 'text-muted hover:text-text',
-              )}
-              onClick={() => setFilter(f)}
-            >
-              {f === 'pending' ? '待批准' : '全部'}
-            </button>
-          ))}
-        </div>
+        <div className="text-[12px] text-muted">过了准入规则的身份自动登记；能读什么由授权决定</div>
       </div>
 
       <ErrorText>{err}</ErrorText>
@@ -72,10 +46,8 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
 
       {users.length === 0 && (
         <div className="border border-line bg-surface px-6 py-10 text-center">
-          <div className="mono-label">{filter === 'pending' ? 'NO PENDING' : 'EMPTY'}</div>
-          <div className="mt-1 text-[12px] text-muted">
-            {filter === 'pending' ? '没有等待批准的身份' : '还没有任何身份来敲门'}
-          </div>
+          <div className="mono-label">EMPTY</div>
+          <div className="mt-1 text-[12px] text-muted">还没有任何身份进来过</div>
         </div>
       )}
 
@@ -83,11 +55,10 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
         {users.map((u, i) => (
           <div
             key={u.id}
-            className="row-in grid grid-cols-[minmax(200px,1.4fr)_120px_100px_170px] items-center gap-4 border-b border-line/60 px-4 last:border-0 hover:bg-surface2/40"
+            className="row-in grid grid-cols-[minmax(220px,1.5fr)_110px_150px] items-center gap-4 border-b border-line/60 px-4 last:border-0 hover:bg-surface2/40"
             style={{ animationDelay: `${i * 30}ms` }}
           >
             <div className="flex items-center gap-2 py-2">
-              {u.status === 'pending' && <span className="breathe h-2 w-2 shrink-0 bg-warn" />}
               <div className="min-w-0">
                 <div className="truncate font-mono text-[13px] text-text">{u.display}</div>
                 <div className="truncate font-mono text-[11px] text-muted">
@@ -96,24 +67,9 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
               </div>
             </div>
             <div className="font-mono text-[11px] text-muted">{u.kind}</div>
-            <div>
-              <span
-                className={cn(
-                  'mono-label border px-1.5 py-0.5',
-                  u.status === 'pending' ? 'border-warn/50 text-warn' : 'border-accent/40 text-accent',
-                )}
-              >
-                {u.status}
-              </span>
-            </div>
             <div className="flex items-center justify-end gap-1 py-2">
-              {u.status === 'pending' && (
-                <Btn variant="primary" className="h-7" onClick={() => void approve(u)}>
-                  批准
-                </Btn>
-              )}
               <Btn variant="ghost" className="h-7" onClick={() => setDetail(u)}>
-                详情
+                详情 / 授权
               </Btn>
               <Btn variant="danger" className="h-7" onClick={() => setDelTarget(u)}>
                 删除
@@ -155,7 +111,7 @@ export function UsersPage({ onChanged }: { onChanged: () => void }) {
         }}
       >
         确定删除 <span className="font-mono text-warn">{delTarget?.display}</span>？
-        它的个人授权与组成员关系会一并删除。它下次敲门会重新变成 pending。
+        它的个人授权与组成员关系会一并删除。它下次过准入会重新登记。
       </Confirm>
     </div>
   )
@@ -207,9 +163,7 @@ function UserDrawer({
           <span>{user.provider_type}</span>
           <span className="text-muted">外部 ID</span>
           <span>{user.external_id}</span>
-          <span className="text-muted">状态</span>
-          <span className={user.status === 'active' ? 'text-accent' : 'text-warn'}>{user.status}</span>
-          <span className="text-muted">最近敲门</span>
+          <span className="text-muted">最近来访</span>
           <span>{user.last_seen_at || '—'}</span>
         </div>
 

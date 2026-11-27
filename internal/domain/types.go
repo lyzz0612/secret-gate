@@ -40,14 +40,14 @@ type Grant struct {
 }
 
 // User 被认证的主体（机器或人），身份键 = (ProviderType, ExternalID)。
+// 过了准入规则即自动登记（没有待批准状态）；能读什么由授权决定。
 type User struct {
 	ID           int64  `json:"id"`
 	ProviderType string `json:"provider_type"`
 	ExternalID   string `json:"external_id"`
 	Display      string `json:"display"`
-	Kind         string `json:"kind"`         // "machine" | "human"
-	Status       string `json:"status"`       // "pending" | "active"
-	SourceID     int64  `json:"source_id"`
+	Kind         string `json:"kind"`      // "machine" | "human"
+	SourceID     int64  `json:"source_id"` // 首次接纳它的实例
 	CreatedAt    string `json:"created_at"`
 	LastSeenAt   string `json:"last_seen_at"`
 }

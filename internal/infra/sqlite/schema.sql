@@ -9,13 +9,14 @@ CREATE TABLE meta (
 );
 
 -- 被认证的主体（机器/人）。身份键 = 类型 + 外部 ID，不绑 Provider 实例
+-- 过准入规则即自动登记，无待批准状态；status 列恒 'active'（保留列仅为兼容旧库）
 CREATE TABLE users (
   id            INTEGER PRIMARY KEY,
   provider_type TEXT NOT NULL,
   external_id   TEXT NOT NULL,
   display       TEXT NOT NULL,
   kind          TEXT NOT NULL CHECK (kind IN ('machine', 'human')),
-  status        TEXT NOT NULL CHECK (status IN ('pending', 'active')),
+  status        TEXT NOT NULL DEFAULT 'active',
   source_id     INTEGER,
   created_at    TEXT NOT NULL,
   last_seen_at  TEXT,

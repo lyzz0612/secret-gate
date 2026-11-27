@@ -180,7 +180,7 @@ func lastNoInstanceReason(instances []domain.ProviderInstance) string {
 	return "全部实例拒绝"
 }
 
-// ResolveUser 找到或创建（pending）用户，并刷新 last_seen。
+// ResolveUser 找到或创建用户（过准入即自动登记，无待批准状态），并刷新 last_seen。
 // 用户身份键 = (类型, external_id)，与实例无关：同仓库被两个实例接纳也只有一个用户。
 func (s *IdentityService) ResolveUser(ctx context.Context, out *AuthOutcome) (domain.User, bool, error) {
 	now := s.now().UTC().Format(time.RFC3339)
@@ -197,7 +197,6 @@ func (s *IdentityService) ResolveUser(ctx context.Context, out *AuthOutcome) (do
 		ExternalID:   out.Parsed.ExtID,
 		Display:      out.Parsed.Disp,
 		Kind:         out.Parsed.Kind,
-		Status:       "pending",
 		SourceID:     out.Instance.ID,
 		CreatedAt:    now,
 		LastSeenAt:   now,

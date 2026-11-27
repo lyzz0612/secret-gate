@@ -189,7 +189,7 @@ function AddGrantModal({
 
   const subjectOptions =
     subjectKind === 'user'
-      ? users.filter((u) => u.status === 'active').map((u) => ({ id: u.id, label: `${u.display}（${u.provider_type}）` }))
+      ? users.map((u) => ({ id: u.id, label: `${u.display}（${u.provider_type}）` }))
       : userGroups.map((g) => ({ id: g.id, label: `${g.name}（${g.member_count} 成员）` }))
 
   return (

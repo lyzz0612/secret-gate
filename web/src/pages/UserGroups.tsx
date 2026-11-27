@@ -240,7 +240,6 @@ function MembersDrawer({
                     {u.provider_type}:{u.external_id}
                   </div>
                 </div>
-                {u.status === 'pending' && <span className="mono-label text-warn">pending</span>}
               </button>
             )
           })}

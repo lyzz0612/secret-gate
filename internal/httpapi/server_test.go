@@ -288,7 +288,7 @@ func TestOverview(t *testing.T) {
 	cl := newClient(t, newServer(t, 1000))
 	cl.do("POST", "/admin/api/login", map[string]string{"password": testAdminPW})
 	code, body, _ := cl.do("GET", "/admin/api/overview", nil)
-	if code != 200 || !strings.Contains(body, `"pending":0`) {
+	if code != 200 || !strings.Contains(body, `"users":0`) || strings.Contains(body, "pending") {
 		t.Errorf("overview = %d %s", code, body)
 	}
 }

@@ -8,37 +8,22 @@ import (
 	"github.com/lyzz0612/deploy-center/internal/domain"
 )
 
-// UserService 用户管理：批准、删除、查授权。
+// UserService 用户管理：准入通过的身份自动登记，这里只有查询与删除。
 type UserService struct {
 	repo Repo
 }
 
 func NewUserService(repo Repo) *UserService { return &UserService{repo: repo} }
 
-func (s *UserService) List(ctx context.Context, status string) ([]domain.User, error) {
-	if status != "" && status != "pending" && status != "active" {
-		return nil, fmt.Errorf("%w: status 只能是 pending / active", ErrInvalid)
-	}
-	return s.repo.ListUsers(ctx, status)
+func (s *UserService) List(ctx context.Context) ([]domain.User, error) {
+	return s.repo.ListUsers(ctx)
 }
 
 func (s *UserService) Get(ctx context.Context, id int64) (*domain.User, error) {
 	return s.repo.UserByID(ctx, id)
 }
 
-// Approve pending → active。
-func (s *UserService) Approve(ctx context.Context, id int64) error {
-	u, err := s.repo.UserByID(ctx, id)
-	if err != nil {
-		return err
-	}
-	if u.Status != "pending" {
-		return fmt.Errorf("%w: 当前状态 %s 不可批准", ErrInvalid, u.Status)
-	}
-	return s.repo.SetUserStatus(ctx, id, "active")
-}
-
-// Delete 真删，连带清授权与组成员关系。
+// Delete 真删，连带清授权与组成员关系。该身份下次过准入会重新登记。
 func (s *UserService) Delete(ctx context.Context, id int64) error {
 	return s.repo.DeleteUser(ctx, id)
 }
