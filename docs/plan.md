@@ -200,10 +200,12 @@ CREATE INDEX idx_grants_subject ON grants(subject_kind, subject_id);
 CREATE TABLE providers (
   id          INTEGER PRIMARY KEY,
   type        TEXT NOT NULL,            -- 'github_oidc'，必须存在于代码注册表
-  name        TEXT NOT NULL,            -- '我的个人号' / '某组织'
+  name        TEXT NOT NULL,            -- 接入标识（CI 侧 /v1/auth/{name}），全局唯一、URL 安全字符
   enabled     INTEGER NOT NULL DEFAULT 1,
   config_json TEXT NOT NULL DEFAULT '{}',
   rules_json  TEXT NOT NULL DEFAULT '[]',
+  default_role    TEXT NOT NULL DEFAULT 'guest',  -- v3：首次登记的分级（guest | normal）
+  auto_group_ids  TEXT NOT NULL DEFAULT '[]',     -- v3：首次登记自动加入的用户组（JSON 数组）
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
@@ -263,8 +265,9 @@ type PluginType interface {
     Match(req *http.Request) bool  // 这个请求该不该归这个类型管
     ConfigFields() []Field         // 后台设置页
     ClaimFields() []ClaimField     // 准入规则可选字段
-    // 类型级：只验真（签名 / iss / exp），每个请求调用一次
-    Parse(ctx context.Context, req *http.Request) (*Parsed, error)
+    // 类型级：验真（签名 / iss / exp）。cfg 是这次请求所用实例的配置
+    // （OIDC 插件从中读 issuer；内置型传 nil），每个实例调一次，公钥按 URL 缓存
+    Parse(ctx context.Context, req *http.Request, cfg map[string]any) (*Parsed, error)
     // 实例级：拿 Parsed + 该实例的配置核对（audience 等），每个实例调用一次
     Accept(ctx context.Context, p *Parsed, cfg map[string]any) error
 }
@@ -357,6 +360,33 @@ runner                    服务                          GitHub
 
 ---
 
+### 6.4 接入标识与自动登记
+
+**实例名就是接入标识。** 一个实例 = 一条 `POST /v1/auth/{name}` 的入口：
+
+```
+POST /v1/auth/gitlab-m68   Bearer <GitLab ID token>
+        │
+        ├ 按 name 查实例（不存在 / 已停用 → 401 并点名，不吞成"凭证无效"）
+        ├ 用该实例配置的 issuer 验签：iss 整串相等才去拉 JWKS
+        │     （绝不信任令牌自带的 iss——它只能被比对，不能决定访问哪个 URL）
+        ├ 跑该实例的准入规则（AND；空规则集 = 不放行）
+        └ 首次见到该身份：建用户（role = default_role）+ 入组（auto_group_ids），同一事务
+              已存在：只刷 last_seen
+
+POST /v1/auth   （不带标识）
+        └ 类型匹配 → 该类型逐实例试（每个实例用自己的 issuer）→ 第一个全过的胜出
+          留给存量 GitHub 调用方，也让忘带标识的请求仍有机会被接纳
+```
+
+名字要能进 URL：`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` 且全局唯一；**改名等于换标识**。
+
+**自动登记只写一次。** `default_role` 与 `auto_group_ids` 是"出生配置"：之后管理员降级、把人移出组，不会被下一次请求改回去（那会让收回权限变成摆设）。要批量对齐已有用户，手工在用户页处理；不做"重新套用"。
+
+**删用户组前校验引用。** 被某实例的 `auto_group_ids` 引用时 `DELETE /admin/api/user-groups/{id}` 返回 409 并点名实例，先改实例再删——避免"删完组，新用户悄悄不再进任何组"。
+
+**身份键**：GitHub 用 `repository_id`；GitLab 用 `<issuer host>#<project_id>`（不同自建实例的 project_id 各自编号，不带前缀会撞）；Vercel 用 `project_id`（全局唯一）。GitLab / Vercel 的 `sub` 都会变（GitLab 可被项目改配置、Vercel 带 environment），一律不当身份键。
+
 ## 7. 授权判定
 
 纯函数，无 IO：
@@ -383,12 +413,19 @@ Allow(now, u User, groups []UserGroup, grants []Grant,
 
 ```
 GET  /healthz                                    200 ok / 503
+POST /v1/auth                                    凭证换短期 token（不带接入标识：按类型与规则择优）
+POST /v1/auth/{provider}                         同上，但指名只用这条实例（provider = 实例名）
+     X-App-Key: ak_…          （appkey 用户）
+     Basic 账号:口令           （password 用户）
+     Authorization: Bearer …  （GitHub / GitLab / Vercel 的 OIDC 令牌）
+     → 200 {"token","expires_in","role","display"}
+     → 401 令牌无效 / 未知或停用的接入标识   → 403 准入不过 / 无授权
 GET  /v1/export                                  全部可读密钥
 GET  /v1/export?group=minigames/prod             指定组（含子孙）
 GET  /v1/export?format=env                       KEY=VALUE 行，便于 >> $GITHUB_ENV
-     Authorization: Bearer <插件令牌>
-     → 200 {"secrets":{"KEY":"VAL"}}
-     → 401 认证失败   → 403 准入不过 / 未批准 / 无授权
+     Authorization: Bearer <短期 token>
+     → 200 {"secrets":[...],"masked":bool} / KEY=VALUE
+     → 401 换票 token 无效   → 403 用户已删
      响应头：Cache-Control: no-store
 ```
 
@@ -825,6 +862,10 @@ jobs:
 | 12 | 密钥必须加密入库，密钥来自环境变量；后台与授权方看到的是解密后明文 | 11 节整体重写；`secrets` 加 `aad_salt`；新增哨兵自检与 reveal 接口 |
 | 13 | github_oidc 实例**不配置** audience/issuer：issuer 是代码级常量（GHES 走派生插件），`aud` 是普通 claim 由准入规则匹配 | 插件 ConfigFields 清零、ClaimFields 增加 aud、`aud` 建议作为第一条规则（防重放）；配置键严格校验（未声明的键拒绝） |
 | 14 | **去掉待批准机制**：过准入规则即自动登记，无授权 = 空集 200 | 删 status 状态机（列恒 active）、批准 API、pending 计数与全部 UI；准入规则就是唯一门槛 |
+| 15 | **实例名即接入标识**（不新增 key 字段）：CI 侧 `POST /v1/auth/{name}` 指名实例 | 新增路由；名字加字符集 + 唯一性校验；改名等于换标识；无标识路径保留"逐实例择优" |
+| 16 | **issuer 由插件声明来源**：GitHub 写死常量，GitLab / Vercel 由实例配置 | 插件契约 `Parse(ctx, req, cfg)`；公钥走 OIDC discovery；只向管理员配置过的 issuer 拉 JWKS（令牌里的 iss 只用来比对） |
+| 17 | **新增 gitlab_oidc / vercel_oidc**：GitLab 身份键 `<issuer host>#<project_id>`，Vercel 用 `project_id` | 三个 OIDC 类型共用 `internal/infra/oidc`；`sub` 不当身份键；Vercel 默认 `aud` 是 `https://vercel.com/<team>` |
+| 18 | **实例级自动登记**：`default_role` + 多组 `auto_group_ids`，只在首次登记生效，不做"重新套用"；删组前校验引用（409 点名） | schema v3；建用户与入组同一事务；实例改动只影响新身份 |
 
 ---
 

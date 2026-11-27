@@ -274,11 +274,13 @@ func (s *server) handleListProviders(w http.ResponseWriter, r *http.Request) {
 }
 
 type providerBody struct {
-	Type   string          `json:"type"`
-	Name   string          `json:"name"`
-	Enabled *bool          `json:"enabled"`
-	Config map[string]any  `json:"config"`
-	Rules  []domain.Rule   `json:"rules"`
+	Type         string         `json:"type"`
+	Name         string         `json:"name"`
+	Enabled      *bool          `json:"enabled"`
+	Config       map[string]any `json:"config"`
+	Rules        []domain.Rule  `json:"rules"`
+	DefaultRole  string         `json:"default_role"`
+	AutoGroupIDs []int64        `json:"auto_group_ids"`
 }
 
 func (s *server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
@@ -287,7 +289,8 @@ func (s *server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	p, err := s.deps.Providers.Create(r.Context(), body.Type, body.Name, body.Config, body.Rules)
+	p, err := s.deps.Providers.Create(r.Context(), body.Type, body.Name, body.Config, body.Rules,
+		body.DefaultRole, body.AutoGroupIDs)
 	if err != nil {
 		mapErr(w, err)
 		return
@@ -307,7 +310,8 @@ func (s *server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	enabled := body.Enabled == nil || *body.Enabled
-	if err := s.deps.Providers.Update(r.Context(), id, body.Name, enabled, body.Config, body.Rules); err != nil {
+	if err := s.deps.Providers.Update(r.Context(), id, body.Name, enabled, body.Config, body.Rules,
+		body.DefaultRole, body.AutoGroupIDs); err != nil {
 		mapErr(w, err)
 		return
 	}

@@ -64,7 +64,7 @@ func basicUserPass(r *http.Request) *[2]string {
 }
 
 // Parse 从 Basic 头提取用户名与口令。用户名进身份键，口令放 Secret（不进 claims）。
-func (p *Plugin) Parse(ctx context.Context, r *http.Request) (*plugins.Parsed, error) {
+func (p *Plugin) Parse(ctx context.Context, r *http.Request, cfg map[string]any) (*plugins.Parsed, error) {
 	cred := basicUserPass(r)
 	if cred == nil {
 		return nil, errors.New("缺少 Basic 认证头")

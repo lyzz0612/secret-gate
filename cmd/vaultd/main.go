@@ -19,7 +19,9 @@ import (
 	"github.com/lyzz0612/deploy-center/internal/app/plugins"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins/appkey"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins/github_oidc"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins/gitlab_oidc"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins/password"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins/vercel_oidc"
 	"github.com/lyzz0612/deploy-center/internal/httpapi"
 	"github.com/lyzz0612/deploy-center/internal/infra/crypto"
 	"github.com/lyzz0612/deploy-center/internal/infra/sqlite"
@@ -85,6 +87,8 @@ func run(args []string) error {
 	// 插件注册表：加插件 = 一个包 + 这里一行
 	registry := plugins.NewRegistry()
 	registry.Register(github_oidc.New())
+	registry.Register(gitlab_oidc.New())
+	registry.Register(vercel_oidc.New())
 	registry.Register(password.New())
 	registry.Register(appkey.New())
 

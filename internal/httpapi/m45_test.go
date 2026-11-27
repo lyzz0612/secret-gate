@@ -1,4 +1,4 @@
-package httpapi_test
+﻿package httpapi_test
 
 import (
 	"encoding/json"
@@ -12,7 +12,7 @@ import (
 
 func TestUserGroupGrants(t *testing.T) {
 	e := newExportEnv(t)
-	e.createInstance("我的个人号", e.aud, []map[string]string{
+	e.createInstance("github-me", e.aud, []map[string]string{
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 	})
 	uid, groupID := e.seed()
@@ -112,7 +112,7 @@ func TestPluginsListing(t *testing.T) {
 
 func TestRejectionsAfterAuthFailures(t *testing.T) {
 	e := newExportEnv(t)
-	e.createInstance("我的个人号", e.aud, []map[string]string{
+	e.createInstance("github-me", e.aud, []map[string]string{
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 	})
 

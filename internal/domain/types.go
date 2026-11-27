@@ -70,15 +70,19 @@ type User struct {
 }
 
 // ProviderInstance 某插件类型的一个实例：一份配置 + 一套准入规则。
+// Name 同时是接入标识：CI 侧 POST /v1/auth/{name} 指名用它。
+// DefaultRole / AutoGroupIDs 决定"验过之后怎么落地"（只在首次登记该身份时生效）。
 type ProviderInstance struct {
-	ID         int64  `json:"id"`
-	Type       string `json:"type"`
-	Name       string `json:"name"`
-	Enabled    bool   `json:"enabled"`
-	ConfigJSON string `json:"config_json"`
-	RulesJSON  string `json:"rules_json"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	ID           int64   `json:"id"`
+	Type         string  `json:"type"`
+	Name         string  `json:"name"`
+	Enabled      bool    `json:"enabled"`
+	ConfigJSON   string  `json:"config_json"`
+	RulesJSON    string  `json:"rules_json"`
+	DefaultRole  string  `json:"default_role"`
+	AutoGroupIDs []int64 `json:"auto_group_ids"`
+	CreatedAt    string  `json:"created_at"`
+	UpdatedAt    string  `json:"updated_at"`
 }
 
 // UserGroup 用户分组，用来批量发授权。

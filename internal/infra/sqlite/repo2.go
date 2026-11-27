@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,70 +14,129 @@ import (
 
 // ---------- providers（实例） ----------
 
+// providerCols 顺序与 scanProvider 一一对应。
+const providerCols = `id, type, name, enabled, config_json, rules_json, default_role, auto_group_ids, created_at, updated_at`
+
+func scanProvider(row interface{ Scan(...any) error }) (*domain.ProviderInstance, error) {
+	var p domain.ProviderInstance
+	var enabled int
+	var groupsJSON string
+	if err := row.Scan(&p.ID, &p.Type, &p.Name, &enabled, &p.ConfigJSON, &p.RulesJSON,
+		&p.DefaultRole, &groupsJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		return nil, err
+	}
+	p.Enabled = enabled != 0
+	p.DefaultRole = orDefault(p.DefaultRole, domain.RoleGuest)
+	p.AutoGroupIDs = decodeGroupIDs(groupsJSON)
+	return &p, nil
+}
+
+// decodeGroupIDs 空值也算空数组（nil 切片会序列化成 null，前端 .length 会崩）。
+func decodeGroupIDs(s string) []int64 {
+	out := make([]int64, 0)
+	if s == "" || s == "[]" {
+		return out
+	}
+	_ = json.Unmarshal([]byte(s), &out)
+	if out == nil {
+		out = make([]int64, 0)
+	}
+	return out
+}
+
+func encodeGroupIDs(ids []int64) string {
+	if len(ids) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
 func (r *Repo) ListProviders(ctx context.Context) ([]domain.ProviderInstance, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, type, name, enabled, config_json, rules_json, created_at, updated_at
-		FROM providers ORDER BY id`)
+	rows, err := r.db.QueryContext(ctx, `SELECT `+providerCols+` FROM providers ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list providers: %w", err)
 	}
 	defer rows.Close()
 	out := make([]domain.ProviderInstance, 0)
 	for rows.Next() {
-		var p domain.ProviderInstance
-		var enabled int
-		if err := rows.Scan(&p.ID, &p.Type, &p.Name, &enabled, &p.ConfigJSON, &p.RulesJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		p, err := scanProvider(rows)
+		if err != nil {
 			return nil, err
 		}
-		p.Enabled = enabled != 0
-		out = append(out, p)
+		out = append(out, *p)
 	}
 	return out, rows.Err()
 }
 
 func (r *Repo) ProviderByID(ctx context.Context, id int64) (*domain.ProviderInstance, error) {
-	var p domain.ProviderInstance
-	var enabled int
-	err := r.db.QueryRowContext(ctx, `SELECT id, type, name, enabled, config_json, rules_json, created_at, updated_at
-		FROM providers WHERE id = ?`, id).
-		Scan(&p.ID, &p.Type, &p.Name, &enabled, &p.ConfigJSON, &p.RulesJSON, &p.CreatedAt, &p.UpdatedAt)
+	row := r.db.QueryRowContext(ctx, `SELECT `+providerCols+` FROM providers WHERE id = ?`, id)
+	p, err := scanProvider(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: Provider 实例 %d 不存在", app.ErrNotFound, id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get provider: %w", err)
 	}
-	p.Enabled = enabled != 0
-	return &p, nil
+	return p, nil
 }
 
-func (r *Repo) CreateProvider(ctx context.Context, typ, name, configJSON, rulesJSON, now string) (domain.ProviderInstance, error) {
-	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO providers(type, name, enabled, config_json, rules_json, created_at, updated_at)
-		 VALUES(?, ?, 1, ?, ?, ?, ?)`, typ, name, configJSON, rulesJSON, now, now)
+// ProviderByName 按接入标识查实例（CI 侧 POST /v1/auth/{name}）。
+func (r *Repo) ProviderByName(ctx context.Context, name string) (*domain.ProviderInstance, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT `+providerCols+` FROM providers WHERE name = ?`, name)
+	p, err := scanProvider(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: 接入标识 %q 不存在", app.ErrNotFound, name)
+	}
 	if err != nil {
+		return nil, fmt.Errorf("get provider by name: %w", err)
+	}
+	return p, nil
+}
+
+func (r *Repo) CreateProvider(ctx context.Context, p domain.ProviderInstance, now string) (domain.ProviderInstance, error) {
+	role := orDefault(p.DefaultRole, domain.RoleGuest)
+	res, err := r.db.ExecContext(ctx,
+		`INSERT INTO providers(type, name, enabled, config_json, rules_json, default_role, auto_group_ids, created_at, updated_at)
+		 VALUES(?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+		p.Type, p.Name, p.ConfigJSON, p.RulesJSON, role, encodeGroupIDs(p.AutoGroupIDs), now, now)
+	if err != nil {
+		if isUnique(err) {
+			return domain.ProviderInstance{}, fmt.Errorf("%w: 接入标识 %q 已被占用", app.ErrConflict, p.Name)
+		}
 		return domain.ProviderInstance{}, fmt.Errorf("create provider: %w", err)
 	}
 	id, _ := res.LastInsertId()
-	return domain.ProviderInstance{
-		ID: id, Type: typ, Name: name, Enabled: true,
-		ConfigJSON: configJSON, RulesJSON: rulesJSON, CreatedAt: now, UpdatedAt: now,
-	}, nil
+	p.ID = id
+	p.Enabled = true
+	p.DefaultRole = role
+	p.AutoGroupIDs = decodeGroupIDs(encodeGroupIDs(p.AutoGroupIDs))
+	p.CreatedAt, p.UpdatedAt = now, now
+	return p, nil
 }
 
-func (r *Repo) UpdateProvider(ctx context.Context, id int64, name, configJSON, rulesJSON string, enabled bool, now string) error {
+func (r *Repo) UpdateProvider(ctx context.Context, p domain.ProviderInstance, now string) error {
 	var e int
-	if enabled {
+	if p.Enabled {
 		e = 1
 	}
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE providers SET name = ?, config_json = ?, rules_json = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-		name, configJSON, rulesJSON, e, now, id)
+		`UPDATE providers SET name = ?, config_json = ?, rules_json = ?, default_role = ?, auto_group_ids = ?,
+			enabled = ?, updated_at = ? WHERE id = ?`,
+		p.Name, p.ConfigJSON, p.RulesJSON, orDefault(p.DefaultRole, domain.RoleGuest),
+		encodeGroupIDs(p.AutoGroupIDs), e, now, p.ID)
 	if err != nil {
+		if isUnique(err) {
+			return fmt.Errorf("%w: 接入标识 %q 已被占用", app.ErrConflict, p.Name)
+		}
 		return fmt.Errorf("update provider: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("%w: Provider 实例 %d 不存在", app.ErrNotFound, id)
+		return fmt.Errorf("%w: Provider 实例 %d 不存在", app.ErrNotFound, p.ID)
 	}
 	return nil
 }
@@ -92,6 +152,24 @@ func (r *Repo) DeleteProvider(ctx context.Context, id int64) error {
 		return fmt.Errorf("%w: Provider 实例 %d 不存在", app.ErrNotFound, id)
 	}
 	return nil
+}
+
+// ProvidersUsingGroup 实例数很少（自用），直接全量读再过滤，避免 JSON 文本匹配的脆弱写法。
+func (r *Repo) ProvidersUsingGroup(ctx context.Context, groupID int64) ([]string, error) {
+	ps, err := r.ListProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0)
+	for _, p := range ps {
+		for _, g := range p.AutoGroupIDs {
+			if g == groupID {
+				out = append(out, p.Name)
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 // ---------- users ----------
@@ -167,7 +245,12 @@ func (r *Repo) UserByKey(ctx context.Context, typ, extID string) (*domain.User, 
 	return u, nil
 }
 
-func (r *Repo) CreateUser(ctx context.Context, u domain.User) (domain.User, error) {
+// userExec 让插入逻辑在 *sql.DB 与 *sql.Tx 之间复用。
+type userExec interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func insertUser(ctx context.Context, ex userExec, u domain.User) (domain.User, error) {
 	var sourceID any
 	if u.SourceID != 0 {
 		sourceID = u.SourceID
@@ -179,11 +262,11 @@ func (r *Repo) CreateUser(ctx context.Context, u domain.User) (domain.User, erro
 	if u.CredLookup != "" {
 		credLookup = u.CredLookup
 	}
-	res, err := r.db.ExecContext(ctx,
+	res, err := ex.ExecContext(ctx,
 		`INSERT INTO users(provider_type, external_id, display, kind, role, status, source_id, created_at, last_seen_at,
 			cred_kind, cred_lookup, cred_cipher, cred_nonce, cred_salt)
 		 VALUES(?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.ProviderType, u.ExternalID, u.Display, u.Kind, u.Role, sourceID, u.CreatedAt, u.LastSeenAt,
+		u.ProviderType, u.ExternalID, u.Display, u.Kind, orDefault(u.Role, domain.RoleGuest), sourceID, u.CreatedAt, u.LastSeenAt,
 		credKind, credLookup, u.CredCipher, u.CredNonce, u.CredSalt)
 	if err != nil {
 		if isUnique(err) {
@@ -193,6 +276,40 @@ func (r *Repo) CreateUser(ctx context.Context, u domain.User) (domain.User, erro
 	}
 	u.ID, _ = res.LastInsertId()
 	return u, nil
+}
+
+func (r *Repo) CreateUser(ctx context.Context, u domain.User) (domain.User, error) {
+	return insertUser(ctx, r.db, u)
+}
+
+// CreateUserWithGroups 建用户 + 写入初始组成员关系，同一事务：
+// 要么"用户 + 组"一起落地，要么都不落地——不留"人建了但组没进去"的半截状态。
+func (r *Repo) CreateUserWithGroups(ctx context.Context, u domain.User, groupIDs []int64) (domain.User, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.User{}, err
+	}
+	defer tx.Rollback()
+
+	created, err := insertUser(ctx, tx, u)
+	if err != nil {
+		return domain.User{}, err
+	}
+	seen := map[int64]bool{}
+	for _, gid := range groupIDs {
+		if seen[gid] {
+			continue
+		}
+		seen[gid] = true
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO user_group_members(user_id, group_id) VALUES(?, ?)`, created.ID, gid); err != nil {
+			return domain.User{}, fmt.Errorf("加成员（组 %d）: %w", gid, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.User{}, err
+	}
+	return created, nil
 }
 
 // UserByCredLookup 按 appkey 哈希索引命中内置用户行（命中即认证通过）。

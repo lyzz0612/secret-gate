@@ -246,7 +246,16 @@ func (s *UserGroupService) Create(ctx context.Context, name, description string)
 }
 
 // Delete 真删：连带清组授权与成员关系。
+// 先校验没有实例把它当作「新用户默认组」——否则删完会静默改变那些实例的登记行为。
 func (s *UserGroupService) Delete(ctx context.Context, id int64) error {
+	users, err := s.repo.ProvidersUsingGroup(ctx, id)
+	if err != nil {
+		return err
+	}
+	if len(users) > 0 {
+		return fmt.Errorf("%w: 用户组正被 %d 条实例用作新用户默认组（%s），先改掉再删",
+			ErrConflict, len(users), strings.Join(users, "、"))
+	}
 	return s.repo.DeleteUserGroup(ctx, id)
 }
 

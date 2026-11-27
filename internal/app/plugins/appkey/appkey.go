@@ -53,7 +53,7 @@ func (p *Plugin) ClaimFields() []plugins.ClaimField {
 
 // Parse 提取 AppKey。ExtID 放 sha256 hex（用户行 cred_lookup 按它命中），
 // 原始 key 绝不进 claims、不写日志。
-func (p *Plugin) Parse(ctx context.Context, r *http.Request) (*plugins.Parsed, error) {
+func (p *Plugin) Parse(ctx context.Context, r *http.Request, cfg map[string]any) (*plugins.Parsed, error) {
 	key := r.Header.Get(AppKeyHeader)
 	if key == "" {
 		return nil, errors.New("缺少 " + AppKeyHeader + " 头")

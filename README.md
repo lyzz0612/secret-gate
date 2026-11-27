@@ -71,7 +71,7 @@ scripts\dev.bat
 
 ## 接入第一个仓库
 
-后台建一个 `GitHub Actions (OIDC)` 实例（无配置项，准入规则建议：`aud` = 你的域名、`repository_owner` = 你的用户名、`event_name` = 白名单事件），然后两跳换票：
+后台「接入」页建一个实例：**实例名就是接入标识**，CI 侧用它指名实例（`POST /v1/auth/{实例名}`）。GitHub Actions 无配置项；GitLab / Vercel 填 `issuer`（GitLab 实例地址 / Vercel 的 `https://oidc.vercel.com/<team>`）。准入规则建议：`aud` = 你的域名、`repository_owner`（GitHub）或 `project_id`（GitLab / Vercel），GitLab 上再加 `ref_protected=true` 与 `pipeline_source` 白名单。
 
 ```yaml
 jobs:
@@ -86,9 +86,9 @@ jobs:
         run: |
           TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://secrets.example.com" | jq -r .value)
-          # 第一跳：OIDC 令牌换短期 token（默认 2 分钟寿命）
+          # 第一跳：OIDC 令牌换短期 token（默认 2 分钟寿命）；github-me 是实例名
           V1=$(curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
-            https://secrets.example.com/v1/auth | jq -r .token)
+            https://secrets.example.com/v1/auth/github-me | jq -r .token)
           # 第二跳：拿短期 token 导出
           curl -sfS -H "Authorization: Bearer $V1" \
             "https://secrets.example.com/v1/export?group=minigames/prod&format=env" \
@@ -98,7 +98,32 @@ jobs:
               done
 ```
 
-首次运行会在后台「用户」页自动登记该仓库身份（默认 guest）——授个权、提级 normal，再跑一次即拿到密钥。**本仓库自带「Secret Gate 自测」workflow**（Actions 页手动触发，地址写死 `https://secret-gate.skyup.top`）：打 healthz、取真 OIDC 令牌、走两跳换票、调 `/v1/export`，失败信息会指明是部署、验签、准入、授权还是分级的问题。非 GitHub 调用方在「用户」页建 **AppKey / 账号密码** 用户（`X-App-Key` 头或 Basic auth 走同一个 `/v1/auth`），凭证加密入库、随时可查看与轮换。
+首次运行会在后台「用户」页自动登记该仓库身份（按实例配置的默认分级，默认 guest）——授个权、需要真值就提级 normal，再跑一次即拿到密钥；实例上还能配「新身份自动进哪些用户组」，接管后就不用手工点第二遍。
+
+**GitLab CI / Vercel** 走同一个第一跳，只是令牌来源不同：
+
+```yaml
+# .gitlab-ci.yml
+deploy:
+  id_tokens:
+    SG_TOKEN:
+      aud: https://secrets.example.com
+  script:
+    - V1=$(curl -fsS -X POST -H "Authorization: Bearer $SG_TOKEN" \
+        https://secrets.example.com/v1/auth/gitlab-m68 | jq -r .token)
+```
+
+```ts
+// Vercel 构建或 Function 里
+const v1 = await fetch('https://secrets.example.com/v1/auth/vercel-acme', {
+  method: 'POST',
+  headers: { Authorization: `Bearer ${process.env.VERCEL_OIDC_TOKEN}` },
+}).then((r) => r.json())
+```
+
+注意 Vercel 的默认 `aud` 是 `https://vercel.com/<team>`（要绑自己的域名得在 Vercel 侧做一次 audience 交换）；GitLab 的 `project_id` 才是稳定身份键，`sub` 可被项目改配置，别拿它当键。
+
+**本仓库自带「Secret Gate 自测」workflow**（Actions 页手动触发，地址写死 `https://secret-gate.skyup.top`）：打 healthz、取真 OIDC 令牌、走两跳换票、调 `/v1/export`，失败信息会指明是部署、验签、准入、授权还是分级的问题。非 OIDC 调用方在「用户」页建 **AppKey / 账号密码** 用户（`X-App-Key` 头或 Basic auth 走同一个 `/v1/auth`），凭证加密入库、随时可查看与轮换。
 
 ## 概念（两跳 + 分级）
 
@@ -113,8 +138,10 @@ jobs:
    → normal 解密真值 / guest 只给 key 名 + 固定假值(响应带 masked:true)
 ```
 
-- **插件类型**（代码）分两种：实例型（github_oidc）后台可建多个实例（不同准入范围）；**内置型**（appkey / 账号密码）凭证直接挂在用户行上，后台「用户」页创建、不建实例。加新类型 = 一个 Go 包 + 一行注册
-- **用户分级**：`guest` 只能看到 key 名（导出值为 `fake_value`），`normal` 拿真实值；默认一律 guest，去用户页提级
+- **插件类型**（代码）分两种：实例型三个 OIDC 平台（`github_oidc` / `gitlab_oidc` / `vercel_oidc`）后台可建多个实例，issuer 由插件声明（GitHub 写死常量，GitLab / Vercel 由实例配置）；**内置型**（appkey / 账号密码）凭证直接挂在用户行上，后台「用户」页创建、不建实例。加新类型 = 一个 Go 包 + 一行注册
+- **实例名 = 接入标识**：`POST /v1/auth/{实例名}` 指名只用那一条实例（不问不猜）；不带名字则按类型与准入规则择优（存量 GitHub 调用方式不变）。名字要能进 URL，只能是字母数字 `.` `_` `-`，全局唯一，改名等于换标识
+- **自动登记一次落地**：实例配的默认分级（guest / normal）与「自动加入的用户组」只在身份首次登记时写一次——之后以后台为准，管理员降级或移出组不会被下一次请求静默改回去
+- **用户分级**：`guest` 只能看到 key 名（导出值为 `fake_value`），`normal` 拿真实值；未配置时默认 guest，去用户页提级
 - **JSON 导出是数组**：`[{"group", "key", "value"}]` 按 `group/key` 字典序——同名 key 跨组共存（每分组各一条）；env 格式是扁平 namespace 装不下同名，冲突时 422 点名分组，用 `?group=` 精确过滤消解
 - **密钥组**两级：`项目/环境`；授权给父组 = 含全部子孙
 - **过准入规则即自动登记**（实例型），没有待批准：规则就是门槛（如 owner 限定），进来了能读什么由授权决定，没授权 = 空集
@@ -134,7 +161,7 @@ jobs:
 ## 开发
 
 ```
-go test ./...                    # 后端：5 包 57 个测试函数
+go test ./...                    # 后端：5 包 64 个测试函数
 npm --prefix web run build       # 前端：产物 go:embed 进二进制（约 18 MB）
 ```
 

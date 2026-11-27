@@ -128,7 +128,9 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /admin/api/rejections", s.requireSession(s.handleRejections))
 
 	// CI 侧两跳：凭证换票 → 票导出
+	// /v1/auth/{provider} 指定接入标识（实例名）；不带则按类型/规则择优（兼容存量调用方）
 	mux.HandleFunc("POST /v1/auth", s.handleV1Auth)
+	mux.HandleFunc("POST /v1/auth/{provider}", s.handleV1Auth)
 	mux.HandleFunc("GET /v1/export", s.handleExport)
 
 	// SPA

@@ -67,15 +67,30 @@ export const api = {
   // ---- M3: 插件与实例 ----
   plugins: () => req('/admin/api/plugins') as Promise<PluginType[]>,
   providers: () => req('/admin/api/providers') as Promise<Provider[]>,
-  createProvider: (type: string, name: string, config: Record<string, string>, rules: Rule[]) =>
+  createProvider: (
+    type: string,
+    name: string,
+    config: Record<string, string>,
+    rules: Rule[],
+    defaultRole: string,
+    autoGroupIds: number[],
+  ) =>
     req('/admin/api/providers', {
       method: 'POST',
-      body: JSON.stringify({ type, name, config, rules }),
+      body: JSON.stringify({ type, name, config, rules, default_role: defaultRole, auto_group_ids: autoGroupIds }),
     }),
-  updateProvider: (id: number, name: string, enabled: boolean, config: Record<string, string>, rules: Rule[]) =>
+  updateProvider: (
+    id: number,
+    name: string,
+    enabled: boolean,
+    config: Record<string, string>,
+    rules: Rule[],
+    defaultRole: string,
+    autoGroupIds: number[],
+  ) =>
     req(`/admin/api/providers/${id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ name, enabled, config, rules }),
+      body: JSON.stringify({ name, enabled, config, rules, default_role: defaultRole, auto_group_ids: autoGroupIds }),
     }),
   deleteProvider: (id: number) => req(`/admin/api/providers/${id}`, { method: 'DELETE' }),
   testProvider: (id: number, claims: Record<string, string>) =>

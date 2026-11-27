@@ -56,9 +56,19 @@ export interface Provider {
   enabled: boolean
   config_json: string
   rules_json: string
+  default_role: string // 'guest' | 'normal'
+  auto_group_ids: number[]
   created_at: string
   updated_at: string
   type_label: string
+}
+
+export interface UserGroup {
+  id: number
+  name: string
+  description: string
+  created_at: string
+  member_count: number
 }
 
 export interface Rule {

@@ -42,9 +42,13 @@ type Repo interface {
 	// providers（实例）
 	ListProviders(ctx context.Context) ([]domain.ProviderInstance, error)
 	ProviderByID(ctx context.Context, id int64) (*domain.ProviderInstance, error)
-	CreateProvider(ctx context.Context, typ, name, configJSON, rulesJSON, now string) (domain.ProviderInstance, error)
-	UpdateProvider(ctx context.Context, id int64, name, configJSON, rulesJSON string, enabled bool, now string) error
+	ProviderByName(ctx context.Context, name string) (*domain.ProviderInstance, error)
+	// CreateProvider / UpdateProvider 传整条实例（ID 由库生成/定位）。
+	CreateProvider(ctx context.Context, p domain.ProviderInstance, now string) (domain.ProviderInstance, error)
+	UpdateProvider(ctx context.Context, p domain.ProviderInstance, now string) error
 	DeleteProvider(ctx context.Context, id int64) error
+	// ProvidersUsingGroup 返回把该用户组当作"新用户默认组"的实例名（删组前校验用）。
+	ProvidersUsingGroup(ctx context.Context, groupID int64) ([]string, error)
 
 	// users
 	ListUsers(ctx context.Context) ([]domain.User, error)
@@ -52,6 +56,8 @@ type Repo interface {
 	UserByKey(ctx context.Context, typ, extID string) (*domain.User, error)
 	UserByCredLookup(ctx context.Context, lookup string) (*domain.User, error)
 	CreateUser(ctx context.Context, u domain.User) (domain.User, error)
+	// CreateUserWithGroups 建用户 + 写入组成员关系（同一次事务；实例型自动登记用）。
+	CreateUserWithGroups(ctx context.Context, u domain.User, groupIDs []int64) (domain.User, error)
 	TouchUser(ctx context.Context, id int64, now string) error
 	UpdateUserRole(ctx context.Context, id int64, role string) error
 	UpdateUserCredential(ctx context.Context, id int64, kind, lookup string, cipher, nonce, salt []byte) error

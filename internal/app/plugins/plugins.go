@@ -7,10 +7,12 @@ import (
 	"context"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/lyzz0612/deploy-center/internal/domain"
 )
+
 // Field 实例的配置字段声明（后台动态渲染表单用）。
 type Field struct {
 	Key         string   `json:"key"`
@@ -50,9 +52,13 @@ type UserFinder interface {
 // PluginType 认证插件类型。
 // 两种形态：
 //   - 实例型（Builtin=false）：Parse 每请求一次；Accept 对照 Provider 实例配置；
-//     过准入规则自动登记用户（github_oidc）。
+//     过准入规则自动登记用户（github_oidc / gitlab_oidc / vercel_oidc）。
 //   - 内置型（Builtin=true）：没有实例，凭证挂后台创建的用户行；FindUser 按 Parse
 //     产物定位用户行，Accept 对照用户行的凭证（appkey / password）。
+//
+// cfg 是"这次请求该用哪份配置"：
+//   - 实例型：胜出（或按名字指定）的那条 Provider 的 config_json——OIDC 插件从中读 issuer；
+//   - 内置型：Parse 时为 nil，Accept 时是用户行上的凭证。
 type PluginType interface {
 	Type() string
 	Label() string
@@ -61,7 +67,7 @@ type PluginType interface {
 	Match(req *http.Request) bool
 	ConfigFields() []Field
 	ClaimFields() []ClaimField
-	Parse(ctx context.Context, req *http.Request) (*Parsed, error)
+	Parse(ctx context.Context, req *http.Request, cfg map[string]any) (*Parsed, error)
 	Accept(ctx context.Context, p *Parsed, cfg map[string]any) error
 	// FindUser 内置类型按 Parse 产物定位用户行；无此用户返回 (nil, nil)。
 	// 实例类型返回 (nil, nil)，不会被调用。
@@ -116,6 +122,15 @@ func (r *Registry) MatchTypes(req *http.Request) []PluginType {
 		}
 	}
 	return out
+}
+
+// ConfigString 读实例配置里的字符串项（缺失或类型不符都当空串）。
+func ConfigString(cfg map[string]any, key string) string {
+	if cfg == nil {
+		return ""
+	}
+	s, _ := cfg[key].(string)
+	return strings.TrimSpace(s)
 }
 
 // SortedNames 类型名列表（稳定排序，给下拉框用）。

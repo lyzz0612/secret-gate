@@ -23,7 +23,9 @@ import (
 	"github.com/lyzz0612/deploy-center/internal/app/plugins"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins/appkey"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins/github_oidc"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins/gitlab_oidc"
 	"github.com/lyzz0612/deploy-center/internal/app/plugins/password"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins/vercel_oidc"
 	"github.com/lyzz0612/deploy-center/internal/httpapi"
 	"github.com/lyzz0612/deploy-center/internal/infra/crypto"
 	"github.com/lyzz0612/deploy-center/internal/infra/sqlite"
@@ -43,7 +45,9 @@ func testRSAKey(t *testing.T) *rsa.PrivateKey {
 
 func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
-// fakeOIDC 起一个假签发者：/.well-known/jwks 返回给定公钥。
+// fakeOIDC 起一个假签发者：discovery 指到自己的 /.well-known/jwks。
+// 三家插件都走 discovery（{issuer}/.well-known/openid-configuration），所以测试桩
+// 一份就够；需要测"实例手填 jwks_url"时把它指到这个地址即可。
 func fakeOIDC(t *testing.T, key *rsa.PrivateKey, kid string) *httptest.Server {
 	t.Helper()
 	jwks := map[string]any{
@@ -53,13 +57,20 @@ func fakeOIDC(t *testing.T, key *rsa.PrivateKey, kid string) *httptest.Server {
 			"e":   b64url(big.NewInt(int64(key.E)).Bytes()),
 		}},
 	}
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/.well-known/jwks" {
+	var ts *httptest.Server
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			json.NewEncoder(w).Encode(map[string]string{
+				"issuer":   ts.URL,
+				"jwks_uri": ts.URL + "/.well-known/jwks",
+			})
+		case "/.well-known/jwks":
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(jwks)
-			return
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 	t.Cleanup(ts.Close)
 	return ts
@@ -135,6 +146,8 @@ func newExportEnv(t *testing.T) *exportEnv {
 
 	registry := plugins.NewRegistry()
 	registry.Register(github_oidc.NewWithIssuer(issuer))
+	registry.Register(gitlab_oidc.New())
+	registry.Register(vercel_oidc.New())
 	registry.Register(password.New())
 	registry.Register(appkey.New())
 
@@ -386,7 +399,7 @@ func (e *exportEnv) seed() (userID int64, groupID int64) {
 
 func TestExport_FullFlow(t *testing.T) {
 	e := newExportEnv(t)
-	e.createInstance("我的个人号", e.aud, []map[string]string{
+	e.createInstance("github-me", e.aud, []map[string]string{
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 		{"field": "event_name", "pattern": "^(push|workflow_dispatch|release)$"},
 	})
@@ -456,7 +469,7 @@ func TestExport_FullFlow(t *testing.T) {
 // 两跳下的 token 侧失败（插件链失败见 TestV1Auth_PluginFailures）。
 func TestExport_TokenFailures(t *testing.T) {
 	e := newExportEnv(t)
-	e.createInstance("我的个人号", e.aud, []map[string]string{
+	e.createInstance("github-me", e.aud, []map[string]string{
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 	})
 	e.seed()
@@ -513,7 +526,7 @@ func TestExport_TokenFailures(t *testing.T) {
 // 插件认证链的失败：全部发生在第一跳 POST /v1/auth。
 func TestV1Auth_PluginFailures(t *testing.T) {
 	e := newExportEnv(t)
-	e.createInstance("我的个人号", e.aud, []map[string]string{
+	e.createInstance("github-me", e.aud, []map[string]string{
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 	})
 	e.seed()
@@ -591,10 +604,10 @@ func TestV1Auth_PluginFailures(t *testing.T) {
 func TestExport_InstanceSelection(t *testing.T) {
 	e := newExportEnv(t)
 	// 两个实例：id 小的 audience 不匹配，id 大的匹配 —— 应选中第二个
-	e.createInstance("错误实例", "https://wrong.example", []map[string]string{
+	e.createInstance("wrong-instance", "https://wrong.example", []map[string]string{
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 	})
-	e.createInstance("正确实例", e.aud, []map[string]string{
+	e.createInstance("right-instance", e.aud, []map[string]string{
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 	})
 	e.seed()
@@ -611,7 +624,7 @@ func TestExport_InstanceSelection(t *testing.T) {
 
 func TestExport_RevokeAndUserDelete(t *testing.T) {
 	e := newExportEnv(t)
-	e.createInstance("我的个人号", e.aud, []map[string]string{
+	e.createInstance("github-me", e.aud, []map[string]string{
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 	})
 	uid, _ := e.seed()
@@ -680,7 +693,7 @@ func TestProviderValidation(t *testing.T) {
 		}
 		// 空配置应成功（无配置项）
 		code, out = e.api("POST", "/admin/api/providers", map[string]any{
-			"type": "github_oidc", "name": "无配置实例",
+			"type": "github_oidc", "name": "no-config",
 			"config": map[string]any{},
 			"rules":  []map[string]string{{"field": "aud", "pattern": "^https://x$"}},
 		})
@@ -720,7 +733,7 @@ func TestProviderValidation(t *testing.T) {
 	})
 
 	t.Run("删除实例不影响用户", func(t *testing.T) {
-		id := e.createInstance("删除我", e.aud, []map[string]string{
+		id := e.createInstance("delete-me", e.aud, []map[string]string{
 			{"field": "repository_owner", "pattern": "^lyzz0612$"},
 		})
 		// 敲门建用户
@@ -747,7 +760,7 @@ func TestProviderValidation(t *testing.T) {
 
 func TestAppKeyFlow(t *testing.T) {
 	e := newExportEnv(t)
-	e.createInstance("我的个人号", e.aud, []map[string]string{
+	e.createInstance("github-me", e.aud, []map[string]string{
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 	})
 	_, gID := e.seed() // 顺带建好密钥
@@ -863,7 +876,7 @@ func TestAppKeyFlow(t *testing.T) {
 
 func TestPasswordUserFlow(t *testing.T) {
 	e := newExportEnv(t)
-	e.createInstance("我的个人号", e.aud, []map[string]string{
+	e.createInstance("github-me", e.aud, []map[string]string{
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 	})
 	_, gID := e.seed()
@@ -962,7 +975,7 @@ func TestTokenTTLSetting(t *testing.T) {
 // 回归背景：旧 map 形态按随机迭代顺序静默丢一条。
 func TestExport_CrossGroupDup(t *testing.T) {
 	e := newExportEnv(t)
-	e.createInstance("我的个人号", e.aud, []map[string]string{
+	e.createInstance("github-me", e.aud, []map[string]string{
 		{"field": "repository_owner", "pattern": "^lyzz0612$"},
 	})
 	_, _ = e.seed()

@@ -1,4 +1,4 @@
-package httpapi_test
+﻿package httpapi_test
 
 import (
 	"encoding/json"
@@ -105,7 +105,7 @@ func TestCreateUserAPI(t *testing.T) {
 
 	t.Run("实例型用户 reveal 凭证 400", func(t *testing.T) {
 		// github 用户先自动登记
-		e.createInstance("我的个人号", e.aud, []map[string]string{
+		e.createInstance("github-me", e.aud, []map[string]string{
 			{"field": "repository_owner", "pattern": "^lyzz0612$"},
 		})
 		e.jwtV1Token()

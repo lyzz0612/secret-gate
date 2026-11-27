@@ -14,8 +14,9 @@ import (
 
 // handleV1Auth 凭证换短期 token。
 // 认证链：插件 Parse（401）→ 内置型查用户行 / 实例型准入规则（403，不建用户）
-// → 自动登记用户 → 按设置里的 TTL 签发 token。
-// 三种凭证形态：X-App-Key 头（appkey） / Basic（账密） / Bearer（github OIDC）。
+// → 自动登记用户（按实例配置的分级与组）→ 按设置里的 TTL 签发 token。
+// 三种凭证形态：X-App-Key 头（appkey） / Basic（账密） / Bearer（OIDC）。
+// 路径里可带接入标识（实例名）：POST /v1/auth/{provider}——指名只用那一条实例。
 func (s *server) handleV1Auth(w http.ResponseWriter, r *http.Request) {
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -26,9 +27,11 @@ func (s *server) handleV1Auth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outcome, err := s.deps.Identity.Authenticate(r.Context(), r)
+	outcome, err := s.deps.Identity.Authenticate(r.Context(), r, r.PathValue("provider"))
 	if err != nil {
 		switch {
+		case errors.Is(err, app.ErrUnknownProvider):
+			writeErr(w, http.StatusUnauthorized, err.Error())
 		case errors.Is(err, app.ErrNoPlugin), errors.Is(err, app.ErrTokenInvalid):
 			writeErr(w, http.StatusUnauthorized, "凭证无效")
 		case errors.Is(err, app.ErrNotAdmitted):

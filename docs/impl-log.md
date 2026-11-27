@@ -1,5 +1,47 @@
 # 实施日志
 
+## 2026-11-27 · GitLab / Vercel 插件 + 接入标识 + 自动登记（schema v3）
+
+### 需求（用户裁定）
+
+1. 新增 gitlab / vercel 两个平台插件，能验它们各自签发的 OIDC 令牌
+2. 不新增 key 字段：**实例名就是接入标识**，CI 侧 `POST /v1/auth/{实例名}`
+3. 实例可配「验过之后」：默认分级（guest / normal）+ 自动加入的用户组（多组）
+4. 自动登记只在首次生效；**不做**"重新套用"按钮；删除用户组前必须校验被实例引用
+
+### 改动（后端）
+
+- **共享验签核心** `internal/infra/oidc`：RS256 + OIDC discovery（`{issuer}/.well-known/openid-configuration` → `jwks_uri`）+ JWKS 按 URL 缓存 1h + 时间窗；`Verify(ctx, token, issuer, jwksURL)` 先比对 `iss` 再联网，令牌里的 iss 只用于比对
+- **插件契约**：`Parse(ctx, req, cfg)` 增参——OIDC 插件从实例配置读 `issuer`（GitHub 仍是代码常量）；github_oidc 从 380 行缩到 ~100 行（复用核心）
+- **gitlab_oidc**（新）：`issuer` 必填、`jwks_url` 选填；身份键 `<issuer host>#<project_id>`（不同自建实例的 project_id 会撞）；claim 含 ref_path / ref_protected / pipeline_source / environment 等
+- **vercel_oidc**（新）：`issuer` 必填（team 形态 `https://oidc.vercel.com/<team>`）；身份键 `project_id`；claim 含 owner / project / environment
+- **接入标识**：新路由 `POST /v1/auth/{provider}`，指名只认那条实例；不带名仍走"类型匹配 → 逐实例试"。名字约束 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` + 全局唯一（重名 409）；未知/停用标识 → 401 并点名（`ErrUnknownProvider`）
+- **自动登记**：`providers` 加 `default_role`、`auto_group_ids`（migration v3）；`CreateUserWithGroups` 同一事务建用户 + 入组；`ResolveUser` 只在新建时使用实例配置，已存在用户只刷 last_seen
+- **删组校验**：`UserGroupService.Delete` 先查 `ProvidersUsingGroup`，被引用 → 409 点名实例列表
+- **试一下**：响应带上 `default_role` 与 `auto_groups`，前端在放行后显示"会登记成什么"
+
+### 改动（前端）
+
+- 实例抽屉：接入标识输入 + 「验过之后」块（分级二选一 + 用户组多选，仅首次生效的提示）
+- 实例卡片：展示 `POST /v1/auth/{name}` 与复制按钮、默认分级与自动入组摘要
+- 「试一下」：样例 claims 按类型给（GitHub / GitLab / Vercel），放行后预览登记结果
+- 设置页「接入速查」改成三类 OIDC 的说法
+
+### 验证
+
+- `go vet ./...` 干净；`go test ./... -count=1` 全绿：5 包 64 个测试函数（新增 8 个：GitLab/Vercel 指名换票、未知/停用/签发者不符、自动登记只写一次、删组 409、实例名字符集与重名、自动组必须存在、试一下预览）
+- 测试桩 `fakeOIDC` 增加 discovery 端点（三家插件统一走 discovery）；存量用例的实例名从中文改成 ASCII（名字现在是接入标识）
+- `npm --prefix web run build` 通过
+- 未做：真实 GitLab / Vercel 令牌联调（需要真实实例与项目），留着接入时第一跑验证
+
+### 已知取舍
+
+- 存量实例若用中文命名，升级后编辑保存会报"接入标识只能用小写字母…"——改名一次即可（名字现在是 URL 的一部分）
+- Vercel 默认 `aud` 是 `https://vercel.com/<team>`；要绑自己的域名得在 Vercel 侧做 audience 交换（且 `iss` 会变成 team 形态）
+- 内部 GitLab 若用企业 CA / 自签证书，容器里仍需 `EXTRA_CA_CERTS` 之类的信任配置（本轮未做）
+
+---
+
 ## 2026-11-27 · README 截图 + 本地演示数据
 
 ### 改动

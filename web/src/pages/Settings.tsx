@@ -113,9 +113,11 @@ curl -s https://secret-gate.example/v1/export \\
       </Section>
 
       <Section title="接入速查">
-        <Row label="GitHub Actions">
-          workflow 需要 <code className="font-mono text-[11.5px] text-accent">permissions: id-token: write</code>，
-          audience 填 Provider 实例里配置的值，出口见 README。
+        <Row label="OIDC（三类）">
+          GitHub Actions / GitLab CI / Vercel 各建一条实例，CI 侧带接入标识换票：
+          <code className="ml-1 font-mono text-[11.5px] text-accent">POST /v1/auth/&#123;实例名&#125;</code>。
+          GitLab 在 <code className="font-mono text-[11.5px]">id_tokens:</code> 里声明 aud，Vercel 用{' '}
+          <code className="font-mono text-[11.5px]">VERCEL_OIDC_TOKEN</code>；不带实例名也能换票（按类型与规则择优）。
         </Row>
         <Row label="脚本 / 其他 CI">
           在「用户」页建 <span className="text-text">appkey</span> 或 <span className="text-text">账号密码</span> 用户，
