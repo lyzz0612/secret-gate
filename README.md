@@ -1,16 +1,28 @@
 # Secret Gate
 
-自托管的轻量密钥服务：GitHub Actions 凭一次性 OIDC 令牌取走被授权的密钥，脚本 / 其他 CI 用 AppKey 或账号密码，**仓库里不再存任何长期凭据**。Infisical 的个人版：砍掉多租户 / RBAC / 审批流，保留 OIDC 短令牌、两跳换票、加密入库、按身份授权。
+自托管的轻量密钥服务：**GitHub Actions / GitLab CI / Vercel** 用各自签发的一次性 OIDC 令牌取走被授权的密钥，脚本和其他 CI 用 AppKey 或账号密码——**仓库里不再存任何长期凭据**。Infisical 的个人版：砍掉多租户 / RBAC / 审批流，保留 OIDC 短令牌、两跳换票、加密入库、按身份授权。
 
 ## 它解决什么
 
 - 密钥散在各个仓库的 `secrets.*` 里，轮换要挨个仓库点 → 集中一处，改一次全员生效
-- workflow 里的长期 PAT / CI key 泄了只能手工吊销 → OIDC 令牌 5 分钟自灭，且只绑指定仓库 / 分支 / 事件
+- workflow 里的长期 PAT / CI key 泄了只能手工吊销 → OIDC 令牌几分钟自灭，且只绑指定项目 / 分支 / 事件
+- 每个平台各搞一套取密钥的方式 → 一个服务、三类令牌，按实例名区分、按准入规则放行
 - 担心数据库文件被拿走 → 密钥 AES-256-GCM 加密后入库，密钥在环境变量里
+
+## 支持的调用方
+
+| 调用方 | 带什么令牌 | 身份键（一个身份一个用户） | 建议准入规则 |
+|---|---|---|---|
+| GitHub Actions | ID token（`permissions: id-token: write`） | `repository_id` | `repository_owner`、`event_name`、`ref` |
+| GitLab CI | ID token（`.gitlab-ci.yml` 的 `id_tokens:`） | `<issuer host>#<project_id>` | `project_id`、`ref_protected`、`pipeline_source` |
+| Vercel | `VERCEL_OIDC_TOKEN`（构建 / Function 里自动有） | `project_id` | `project_id`、`environment` |
+| 脚本 / 其他 CI | AppKey 或 账号:口令 | 后台建的用户行 | —（凭证本身就是身份） |
+
+两类插件：**实例型**是上面三个 OIDC 平台（后台可建多个实例，各带 issuer 与规则）；**内置型**是 AppKey / 账号密码（凭证挂在用户行上，后台「用户」页建，不建实例）。
 
 ## 界面
 
-后台共七个页面：总览 / 密钥 / 授权 / 用户 / 用户组 / Provider / 设置。下面截图取自本地开发实例（`scripts\dev.bat` 起的服务，库里是演示数据）。
+后台共七个页面：总览 / 密钥 / 授权 / 用户 / 用户组 / Provider / 设置。下面截图取自本地开发实例（`scripts\dev.bat` 起的服务，库里是演示数据）；界面仍在演进，新增能力以文字说明与 [docs/impl-log.md](docs/impl-log.md) 为准。
 
 ![总览](docs/images/admin-overview.png)
 
@@ -69,7 +81,7 @@ scripts\dev.bat
 
 数据落在 `data/app.db`（单文件 SQLite）；想从零重来：停服务 → 删 `data/app.db` → 重跑 `dev.bat`。
 
-## 接入第一个仓库
+## 接入第一个项目
 
 后台「接入」页建一个实例：**实例名就是接入标识，也是唯一的区分维度**——CI 侧用它指名实例（`POST /v1/auth/{实例名}`），服务端按名字取该实例的 issuer 验签、只跑这条实例的规则。GitHub Actions 无配置项；GitLab / Vercel 填 `issuer`（GitLab 实例地址 / Vercel 的 `https://oidc.vercel.com/<team>`）。准入规则建议：`repository_owner`（GitHub）或 `project_id`（GitLab / Vercel），GitLab 上再加 `ref_protected=true` 与 `pipeline_source` 白名单。
 
@@ -131,10 +143,10 @@ GitLab 的 `project_id` 才是稳定身份键（`sub` 可被项目改配置，�
 ## 概念（两跳 + 分级）
 
 ```
-第一跳 POST /v1/auth（凭证只在这里出现）
+第一跳 POST /v1/auth 或 /v1/auth/{实例名}（凭证只在这里出现）
    X-App-Key: ak_… ──┐
    Basic 账号:口令 ────┼→ 插件认证(验签 401) → 内置型查用户行 / 实例准入(正则 AND, 403)
-   Bearer OIDC 令牌 ──┘   → 自动登记(实例型) → 签发短期 token(默认 2 分钟, 设置页可调)
+   Bearer OIDC 令牌 ──┘   → 首次登记(默认分级 + 自动入组) → 签发短期 token(默认 2 分钟, 设置页可调)
                               ↓ {"token", "expires_in", "role"}
 第二跳 GET /v1/export（只认短期 token）
    授权(个人 ∪ 用户组 → 密钥组[含子孙] / 单条) 实时展开
@@ -160,6 +172,16 @@ GitLab 的 `project_id` 才是稳定身份键（`sub` 可被项目改配置，�
 - 后台单口令（环境变量），改口令 = 改配置重启，旧会话全失效；登录限流每 IP 10 次/分
 - **不防**：主机被 root、进程内存被 dump、同时拿到 db 和环境变量的人
 - 备份 `app.db` 必须与当时的 `MASTER_KEY` 配套，分开存
+
+## 扩展：加一个新平台
+
+一个平台 = 一个 Go 包 + 一行注册，前端零改动（表单与规则字段都由插件声明）：
+
+1. 在 `internal/app/plugins/<name>/` 实现 `plugins.PluginType`：`Type` / `Label` / `Builtin` / `Match` / `ConfigFields`（后台表单长什么样）/ `ClaimFields`（规则可选哪些字段）/ `Parse`（验签 + 取身份键）/ `Accept` / `FindUser`
+2. `cmd/vaultd/main.go` 加一行 `registry.Register(<name>.New())`
+3. 后台「接入」页新建实例即出现该类型
+
+OIDC 类插件不用重写验签：直接复用 `internal/infra/oidc`（`discovery` 定位 JWKS + 缓存 + RS256 + 时间窗），只需给出 issuer 从哪来（代码常量还是实例配置）和身份键取哪个 claim。现有的 `github_oidc` / `gitlab_oidc` / `vercel_oidc` 都是这么实现的，各自约 100–150 行。
 
 ## 开发
 
