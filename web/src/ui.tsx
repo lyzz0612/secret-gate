@@ -1,6 +1,36 @@
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
+import { Component } from 'react'
 import * as RD from '@radix-ui/react-dialog'
 import { useState } from 'react'
+
+/* ---------- 错误边界：组件崩了显示错误卡而不是整页黑屏 ---------- */
+
+interface BoundaryState {
+  error: string | null
+}
+
+export class ErrorBoundary extends Component<{ children: ReactNode }, BoundaryState> {
+  state: BoundaryState = { error: null }
+
+  static getDerivedStateFromError(err: unknown): BoundaryState {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-3 p-8">
+          <div className="mono-label text-danger">RENDER ERROR</div>
+          <div className="max-w-[640px] overflow-auto border border-danger/40 bg-bg px-4 py-3 font-mono text-[11.5px] leading-5 text-muted">
+            {this.state.error}
+          </div>
+          <Btn onClick={() => this.setState({ error: null })}>重试渲染</Btn>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 export function cn(...parts: (string | false | null | undefined)[]) {
   return parts.filter(Boolean).join(' ')

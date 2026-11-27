@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from './api'
-import { Btn, cn } from './ui'
+import { Btn, cn, ErrorBoundary } from './ui'
 import type { Overview, Status } from './types'
 import { Login } from './pages/Login'
 import { OverviewPage } from './pages/Overview'
@@ -130,13 +130,15 @@ export default function App() {
           </div>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {page === 'overview' && <OverviewPage overview={overview} status={status} onGo={setPage} />}
-          {page === 'secrets' && <SecretsPage onChanged={refreshOverview} />}
-          {page === 'grants' && <GrantsPage onChanged={refreshOverview} />}
-          {page === 'users' && <UsersPage onChanged={refreshOverview} />}
-          {page === 'usergroups' && <UserGroupsPage onChanged={refreshOverview} />}
-          {page === 'providers' && <ProvidersPage onChanged={refreshOverview} />}
-          {page === 'settings' && <SettingsPage />}
+          <ErrorBoundary key={page}>
+            {page === 'overview' && <OverviewPage overview={overview} status={status} onGo={setPage} />}
+            {page === 'secrets' && <SecretsPage onChanged={refreshOverview} />}
+            {page === 'grants' && <GrantsPage onChanged={refreshOverview} />}
+            {page === 'users' && <UsersPage onChanged={refreshOverview} />}
+            {page === 'usergroups' && <UserGroupsPage onChanged={refreshOverview} />}
+            {page === 'providers' && <ProvidersPage onChanged={refreshOverview} />}
+            {page === 'settings' && <SettingsPage />}
+          </ErrorBoundary>
         </div>
       </main>
     </div>

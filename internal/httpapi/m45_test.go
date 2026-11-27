@@ -184,7 +184,11 @@ func TestPluginsListing(t *testing.T) {
 	if !strings.Contains(out, "github_oidc") || !strings.Contains(out, "password") {
 		t.Errorf("插件清单应含两种类型 = %s", out)
 	}
-	if !strings.Contains(out, `"secret":true`) {
-		t.Errorf("password 字段应标记 secret = %s", out)
+	// 回归：nil 切片序列化成 null 会让前端 .length 崩整页（新建实例黑屏）
+	if !strings.Contains(out, `"config_fields":[]`) {
+		t.Errorf("github_oidc 无配置字段时应输出空数组而不是 null = %s", out)
+	}
+	if !strings.Contains(out, `"claim_fields":[`) {
+		t.Errorf("claim_fields 应是数组 = %s", out)
 	}
 }

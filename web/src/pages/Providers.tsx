@@ -246,7 +246,7 @@ function ProviderDrawer({
         )}
 
         {/* 插件声明的配置字段：动态渲染，Secret 字段遮罩；无声明则不显示该区 */}
-        {(curType?.config_fields.length ?? 0) > 0 && (
+        {(curType?.config_fields?.length ?? 0) > 0 && (
           <div className="border-t border-line pt-4">
             <div className="mono-label mb-3">实例配置（由插件类型声明）</div>
             <div className="space-y-4">
@@ -375,7 +375,7 @@ function TestDrawer({ provider, onClose }: { provider: Provider; onClose: () => 
               {out.allowed ? '✓ 放行' : '✗ 拒绝'}
             </div>
             <div>
-              {out.results.map((r, i) => (
+              {(out.results ?? []).map((r, i) => (
                 <div
                   key={i}
                   className="grid grid-cols-[180px_1fr_70px] items-center gap-3 border-b border-line/60 px-4 py-2 font-mono text-[12px] last:border-0"

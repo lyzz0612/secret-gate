@@ -37,13 +37,24 @@ type InstanceView struct {
 	TypeLabel string `json:"type_label"`
 }
 
-// ListTypes 全部已注册类型。
+// ListTypes 全部已注册类型。列表字段永远是非空数组
+// （nil 切片会序列化成 null，前端 .length 直接崩整页——新建实例黑屏的教训）。
 func (s *ProviderService) ListTypes() []TypeSummary {
-	out := []TypeSummary{}
+	out := make([]TypeSummary, 0)
 	for _, p := range s.registry.List() {
+		cfg := p.ConfigFields()
+		if cfg == nil {
+			cfg = []plugins.Field{}
+		}
+		claims := p.ClaimFields()
+		if claims == nil {
+			claims = []plugins.ClaimField{}
+		}
 		out = append(out, TypeSummary{
-			Type: p.Type(), Label: p.Label(),
-			ConfigFields: p.ConfigFields(), ClaimFields: p.ClaimFields(),
+			Type:         p.Type(),
+			Label:        p.Label(),
+			ConfigFields: cfg,
+			ClaimFields:  claims,
 		})
 	}
 	return out

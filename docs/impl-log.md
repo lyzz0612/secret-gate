@@ -1,5 +1,28 @@
 # 实施日志
 
+## 2026-11-27 · 新建实例黑屏修复
+
+### 根因
+
+`github_oidc` 清空配置字段后 `ConfigFields()` 返回 nil，Go 把 nil 切片序列化成 JSON
+`null`；前端 `curType?.config_fields.length` 对 null 取 length → TypeError →
+整棵 React 树崩掉（背景近黑 = 黑屏）。与授权页 `null` 是同一类坑，这次炸在组件树上。
+
+### 修复（三层）
+
+1. 后端契约：`ListTypes()` 对 ConfigFields/ClaimFields 做 nil→空数组兜底，列表字段永远是数组
+2. 前端防御：`config_fields?.length`、`results ?? []` 可选链
+3. **ErrorBoundary**：包住每个页面（key=page 切换重挂载），组件崩了显示错误卡+重试按钮，
+   不再整页黑屏
+
+### 验证
+
+- 新增回归断言（plugins 清单必须含 `"config_fields":[]`）；5 包 49 个测试函数全绿
+- 真二进制：`config_fields:[]`（github_oidc）/ 数组（password）确认输出形状
+- 排障过程踩一次环境坑：端口被上轮残留进程占着，旧二进制在应答——杀进程重验后确认
+
+---
+
 ## 2026-11-27 · 后台手动建用户（预配置 / 测试）
 
 ### 改动
