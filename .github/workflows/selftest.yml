@@ -113,7 +113,7 @@ jobs:
               fi
               if [ "$count" = "0" ]; then
                 echo "::warning::认证、准入、登记全通，但没有任何授权"
-                echo "::error::去后台「授权」页给 lyzz0612/deploy-center（用户页里 github_oidc 身份）授一个密钥组，再跑一次"
+                echo "::error::去后台「授权」页给 lyzz0612/secret-gate（用户页里 github_oidc 身份）授一个密钥组，再跑一次"
                 exit 1
               fi
               echo "::notice::✅ 全链路通：OIDC 验签 → 准入 → 换票 → 授权 → 解密"

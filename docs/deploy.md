@@ -72,7 +72,7 @@ curl http://127.0.0.1:8788/healthz
 3. **密钥**：建组（如 `minigames/prod`）并录入第一条密钥
 4. Actions 页手动跑 **「Secret Gate 自测」** workflow（`.github/workflows/selftest.yml`）——
    它会打 `/healthz`、取真 OIDC 令牌、调 `/v1/export`，按失败信息对号入座
-5. 第一次多半是「200 但 0 条」：认证准入都通了，只差授权——**授权**页给 `lyzz0612/deploy-center` 授一个密钥组，再跑一次自测应全绿
+5. 第一次多半是「200 但 0 条」：认证准入都通了，只差授权——**授权**页给 `lyzz0612/secret-gate` 授一个密钥组，再跑一次自测应全绿
 6. 其他仓库接入：抄 README 里的 workflow 片段，audience 一致
 
 ## 6. 升级

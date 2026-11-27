@@ -1,4 +1,4 @@
-# Secret Gate（仓库名 deploy-center）
+# Secret Gate
 
 自托管的轻量密钥服务：GitHub Actions 凭一次性 OIDC 令牌取走被授权的密钥，脚本 / 其他 CI 用 AppKey 或账号密码，**仓库里不再存任何长期凭据**。Infisical 的个人版：砍掉多租户 / RBAC / 审批流，保留 OIDC 短令牌、两跳换票、加密入库、按身份授权。
 
@@ -7,6 +7,33 @@
 - 密钥散在各个仓库的 `secrets.*` 里，轮换要挨个仓库点 → 集中一处，改一次全员生效
 - workflow 里的长期 PAT / CI key 泄了只能手工吊销 → OIDC 令牌 5 分钟自灭，且只绑指定仓库 / 分支 / 事件
 - 担心数据库文件被拿走 → 密钥 AES-256-GCM 加密后入库，密钥在环境变量里
+
+## 界面
+
+后台共七个页面：总览 / 密钥 / 授权 / 用户 / 用户组 / Provider / 设置。下面截图取自本地开发实例（`scripts\dev.bat` 起的服务，库里是演示数据）。
+
+![总览](docs/images/admin-overview.png)
+
+![密钥](docs/images/admin-secrets.png)
+
+| 授权 | 用户 |
+| :--: | :--: |
+| ![授权](docs/images/admin-grants.png) | ![用户](docs/images/admin-users.png) |
+| **用户组** | **Provider 实例** |
+| ![用户组](docs/images/admin-user-groups.png) | ![Provider](docs/images/admin-providers.png) |
+
+准入规则的「试一下」：贴一份 claims，逐条看命中 / 缺失：
+
+![准入规则试一下](docs/images/admin-providers-test.png)
+
+<details>
+<summary>登录页 / 设置页</summary>
+
+| 登录 | 设置 |
+| :--: | :--: |
+| ![登录](docs/images/admin-login.png) | ![设置](docs/images/admin-settings.png) |
+
+</details>
 
 ## 快速开始（Docker）
 
@@ -29,7 +56,18 @@ services:
 ```
 
 详细部署（1Panel 反代 / ghcr 私有镜像处理 / 首次接入闭环）：[docs/deploy.md](docs/deploy.md)。
-本地开发：`scripts\dev.bat`（Go 1.27+ / Node 20+，口令 `dev`）。
+
+## 本地运行
+
+不装 Docker，本机直接跑（Go 1.27+、Node 20+）：
+
+```
+scripts\dev.bat
+```
+
+脚本依次做四件事：检查 go / node → 首次 `npm --prefix web install` → 构建前端（产物 `go:embed` 进二进制）→ 用固定的开发密钥起服务并打开浏览器。地址 <http://127.0.0.1:8788/admin>，口令 `dev`；`MASTER_KEY` / `ADMIN_PASSWORD` 可用环境变量覆盖，`SG_NO_BROWSER=1` 跳过自动开浏览器。
+
+数据落在 `data/app.db`（单文件 SQLite）；想从零重来：停服务 → 删 `data/app.db` → 重跑 `dev.bat`。
 
 ## 接入第一个仓库
 
@@ -96,12 +134,14 @@ jobs:
 ## 开发
 
 ```
-go test ./...                    # 后端：5 包 56 个测试函数
+go test ./...                    # 后端：5 包 57 个测试函数
 npm --prefix web run build       # 前端：产物 go:embed 进二进制（约 18 MB）
 ```
 
 技术栈：Go 标准库（`net/http` 路由、AES-GCM、RS256 验签手写）+ 2 个第三方依赖（纯 Go SQLite、x/crypto）；前端 Vite + React 19 + Tailwind 4 + Radix。
 
-**发版**：push 到 `master` → CI 跑测试 → git tag 末位 +1（v0.0.x）→ 构建镜像推 ghcr。文档改动不触发。
+Go module 名仍是 `github.com/lyzz0612/deploy-center`（仓库已改名 `secret-gate`，模块名还没动）。
+
+**发版**：push 到 `master` → CI 跑测试 → git tag 末位 +1（v0.0.x）→ 构建镜像推 ghcr。`**.md` 与 `docs/**` 不触发。
 
 进度与设计：[docs/plan.md](docs/plan.md) · 实施日志：[docs/impl-log.md](docs/impl-log.md)

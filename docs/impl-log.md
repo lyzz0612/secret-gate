@@ -1,5 +1,21 @@
 # 实施日志
 
+## 2026-11-27 · README 截图 + 本地演示数据
+
+### 改动
+
+- README 加「界面」截图段（9 张，`docs/images/`）与「本地运行」段（`dev.bat` 四步、单文件 `data/app.db`、清库重来）
+- 顺手改掉过期的仓库名引用：README 标题、`docs/deploy.md` 与 `selftest.yml` 里的 `lyzz0612/deploy-center`
+- 本地库清空后灌了一份演示数据（5 组 / 12 条密钥 / 1 个 github_oidc 实例 / 3 个用户 / 2 个用户组 / 4 条授权），只在本机 `data/app.db` 里，不进仓库
+
+### 验证
+
+- 截图取自本地实例（`-ldflags -X main.version=0.0.1` 的二进制，Chrome 1440×900 @2x），9 张共约 980 KB
+- `go vet ./...` / `go test ./... -count=1` 全绿（5 包 57 个测试函数）
+- 灌数据时发现一个未修缺陷：用户表 `cred_lookup`（sha256(口令)）的唯一索引对 password 用户同样生效，两个账密账号用同一口令会撞出「用户 xxx 已存在」的误导性报错；绕过办法是口令不同（待定：password 用户是否该写 lookup）
+
+---
+
 ## 2026-11-27 · 新建实例黑屏修复
 
 ### 根因
