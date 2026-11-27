@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/lyzz0612/deploy-center/internal/app"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins/github_oidc"
+	"github.com/lyzz0612/deploy-center/internal/app/plugins/password"
 	"github.com/lyzz0612/deploy-center/internal/httpapi"
 	"github.com/lyzz0612/deploy-center/internal/infra/crypto"
 	"github.com/lyzz0612/deploy-center/internal/infra/sqlite"
@@ -41,11 +44,20 @@ func newServer(t *testing.T, loginRateLimit int) http.Handler {
 	if err := app.EnsureSentinel(repo, sealer); err != nil {
 		t.Fatal(err)
 	}
+	registry := plugins.NewRegistry()
+	registry.Register(github_oidc.New())
+	registry.Register(password.New())
 	return httpapi.New(httpapi.Deps{
 		Version:         "test",
 		SchemaVersion:   sqlite.SchemaVersion,
 		Login:           app.NewLoginService(testAdminPW),
 		Secrets:         app.NewSecretService(repo, sealer),
+		Identity:        app.NewIdentityService(repo, registry),
+		Providers:       app.NewProviderService(repo, registry),
+		Users:           app.NewUserService(repo),
+		UserGroups:      app.NewUserGroupService(repo),
+		Grants:          app.NewGrantService(repo),
+		Export:          app.NewExportService(repo, sealer),
 		Static:          web.Dist,
 		LoginRateLimit:  loginRateLimit,
 		LoginRateWindow: time.Hour,
@@ -186,6 +198,11 @@ func TestOriginCheck(t *testing.T) {
 func TestGroupsAndSecretsAPI(t *testing.T) {
 	cl := newClient(t, newServer(t, 1000))
 	cl.do("POST", "/admin/api/login", map[string]string{"password": testAdminPW})
+
+	// 空列表必须是 [] 而不是 null（前端 .map 会炸；回归：授权页首次进入报加载失败）
+	if code, body, _ := cl.do("GET", "/admin/api/grants", nil); code != 200 || body != "[]\n" {
+		t.Errorf("空 grants 应为 []（不是 null）, got %d %q", code, body)
+	}
 
 	// ---- 分组 ----
 	code, body, _ := cl.do("POST", "/admin/api/groups", map[string]string{"path": "minigames", "name": "小游戏"})

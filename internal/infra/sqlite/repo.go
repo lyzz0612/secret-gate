@@ -107,7 +107,8 @@ func (r *Repo) ListGroups(ctx context.Context) ([]domain.SecretGroup, error) {
 		return nil, fmt.Errorf("list groups: %w", err)
 	}
 	defer rows.Close()
-	var out []domain.SecretGroup
+	// make 而不是 var：空列表要序列化成 [] 而不是 null，前端 map 会炸
+	out := make([]domain.SecretGroup, 0)
 	for rows.Next() {
 		var g domain.SecretGroup
 		if err := rows.Scan(&g.ID, &g.Path, &g.Name, &g.CreatedAt); err != nil {
@@ -211,7 +212,7 @@ func (r *Repo) ListSecrets(ctx context.Context, groupID int64) ([]domain.SecretM
 		return nil, fmt.Errorf("list secrets: %w", err)
 	}
 	defer rows.Close()
-	var out []domain.SecretMeta
+	out := make([]domain.SecretMeta, 0)
 	for rows.Next() {
 		var m domain.SecretMeta
 		if err := rows.Scan(&m.ID, &m.GroupID, &m.Key, &m.UpdatedAt); err != nil {

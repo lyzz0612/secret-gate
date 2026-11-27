@@ -19,7 +19,7 @@ func (r *Repo) ListProviders(ctx context.Context) ([]domain.ProviderInstance, er
 		return nil, fmt.Errorf("list providers: %w", err)
 	}
 	defer rows.Close()
-	var out []domain.ProviderInstance
+	out := make([]domain.ProviderInstance, 0)
 	for rows.Next() {
 		var p domain.ProviderInstance
 		var enabled int
@@ -115,7 +115,7 @@ func (r *Repo) ListUsers(ctx context.Context) ([]domain.User, error) {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
 	defer rows.Close()
-	var out []domain.User
+	out := make([]domain.User, 0)
 	for rows.Next() {
 		u, err := scanUser(rows)
 		if err != nil {
@@ -203,7 +203,7 @@ func (r *Repo) ListUserGroups(ctx context.Context) ([]domain.UserGroup, error) {
 		return nil, fmt.Errorf("list user groups: %w", err)
 	}
 	defer rows.Close()
-	var out []domain.UserGroup
+	out := make([]domain.UserGroup, 0)
 	for rows.Next() {
 		var g domain.UserGroup
 		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt); err != nil {
@@ -270,7 +270,7 @@ func (r *Repo) UserGroupIDs(ctx context.Context, userID int64) ([]int64, error) 
 		return nil, fmt.Errorf("user group ids: %w", err)
 	}
 	defer rows.Close()
-	var out []int64
+	out := make([]int64, 0)
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
@@ -312,7 +312,7 @@ func (r *Repo) GroupMembers(ctx context.Context, groupID int64) ([]domain.User, 
 		return nil, fmt.Errorf("group members: %w", err)
 	}
 	defer rows.Close()
-	var out []domain.User
+	out := make([]domain.User, 0)
 	for rows.Next() {
 		u, err := scanUser(rows)
 		if err != nil {
@@ -338,7 +338,7 @@ func (r *Repo) ListGrants(ctx context.Context, subjectKind string, subjectID int
 		return nil, fmt.Errorf("list grants: %w", err)
 	}
 	defer rows.Close()
-	var out []domain.Grant
+	out := make([]domain.Grant, 0)
 	for rows.Next() {
 		var g domain.Grant
 		if err := rows.Scan(&g.ID, &g.SubjectKind, &g.SubjectID, &g.TargetKind, &g.TargetID, &g.CreatedAt); err != nil {
@@ -370,7 +370,7 @@ func (r *Repo) GrantsForSubjects(ctx context.Context, userID int64, groupIDs []i
 		return nil, fmt.Errorf("grants for subjects: %w", err)
 	}
 	defer rows.Close()
-	var out []domain.Grant
+	out := make([]domain.Grant, 0)
 	for rows.Next() {
 		var g domain.Grant
 		if err := rows.Scan(&g.ID, &g.SubjectKind, &g.SubjectID, &g.TargetKind, &g.TargetID, &g.CreatedAt); err != nil {
