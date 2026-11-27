@@ -2,14 +2,16 @@ package domain
 
 import (
 	"reflect"
+	"sort"
 	"testing"
 )
 
 func ids(m map[int64]struct{}) []int64 {
-	out := []int64{}
+	out := make([]int64, 0, len(m))
 	for k := range m {
 		out = append(out, k)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] }) // map 遍历序随机，必须排序后断言
 	return out
 }
 

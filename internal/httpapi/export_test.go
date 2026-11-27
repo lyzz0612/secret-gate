@@ -127,8 +127,13 @@ func newExportEnv(t *testing.T) *exportEnv {
 		t.Fatal(err)
 	}
 
+	// 假签发者（github_oidc 的 issuer 是代码级常量，测试用 NewWithIssuer 指向它）
+	key := testRSAKey(t)
+	kid := "test-key-1"
+	issuer := fakeOIDC(t, key, kid).URL
+
 	registry := plugins.NewRegistry()
-	registry.Register(github_oidc.New())
+	registry.Register(github_oidc.NewWithIssuer(issuer))
 	registry.Register(password.New())
 
 	h := httpapi.New(httpapi.Deps{
@@ -150,11 +155,11 @@ func newExportEnv(t *testing.T) *exportEnv {
 	jar, _ := cookiejar.New(nil)
 	cl := &http.Client{Jar: jar}
 
-	env := &exportEnv{t: t, srv: srv, cl: cl, aud: "https://secrets.test.example"}
-	env.key = testRSAKey(t)
-	env.kid = "test-key-1"
-	fake := fakeOIDC(t, env.key, env.kid)
-	env.issuer = fake.URL
+	env := &exportEnv{
+		t: t, srv: srv, cl: cl,
+		aud: "https://secrets.test.example",
+		key: key, kid: kid, issuer: issuer,
+	}
 
 	// 后台登录
 	login := func() {
@@ -193,13 +198,16 @@ func (e *exportEnv) api(method, path string, body any) (int, string) {
 	return resp.StatusCode, b.String()
 }
 
-// createInstance 建一个 github_oidc 实例（issuer 指向假签发者）。
+// createInstance 建一个 github_oidc 实例。
+// github_oidc 无实例配置项；aud 作为普通 claim 由规则匹配（自动注入一条 aud 规则，
+// 等价于真实使用时用户手写的防重放规则）。
 func (e *exportEnv) createInstance(name, aud string, rules []map[string]string) int64 {
 	e.t.Helper()
+	all := append([]map[string]string{{"field": "aud", "pattern": "^" + aud + "$"}}, rules...)
 	body := map[string]any{
 		"type": "github_oidc", "name": name,
-		"config": map[string]any{"audience": aud, "issuer": e.issuer},
-		"rules":  rules,
+		"config": map[string]any{},
+		"rules":  all,
 	}
 	code, out := e.api("POST", "/admin/api/providers", body)
 	if code != 201 {
@@ -387,7 +395,15 @@ func TestExport_AuthFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("audience 不匹配 → 403 不建用户", func(t *testing.T) {
+	t.Run("假 issuer（非 GitHub）→ 401 且不拉 JWKS", func(t *testing.T) {
+		claims := defaultClaims("https://evil-issuer.example", e.aud)
+		tok := mintJWT(t, e.key, e.kid, claims)
+		if code, _ := e.export(tok, ""); code != 401 {
+			t.Errorf("= %d, 期望 401（issuer 写死在代码里）", code)
+		}
+	})
+
+	t.Run("aud 规则不匹配 → 403 不建用户", func(t *testing.T) {
 		claims := defaultClaims(e.issuer, "https://other-service.example")
 		tok := mintJWT(t, e.key, e.kid, claims)
 		if code, _ := e.export(tok, ""); code != 403 {
@@ -487,12 +503,32 @@ func TestProviderValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("缺必填 audience", func(t *testing.T) {
+	t.Run("github_oidc 不接受任何配置键", func(t *testing.T) {
 		code, out := e.api("POST", "/admin/api/providers", map[string]any{
-			"type": "github_oidc", "name": "x", "config": map[string]any{}, "rules": []map[string]string{{"field": "a", "pattern": "b"}},
+			"type": "github_oidc", "name": "x", "config": map[string]any{"audience": "https://x"},
+			"rules": []map[string]string{{"field": "a", "pattern": "b"}},
 		})
 		if code != 400 {
-			t.Errorf("= %d %s, 期望 400", code, out)
+			t.Errorf("= %d %s, 期望 400（issuer/audience 已并入代码与规则）", code, out)
+		}
+		// 空配置应成功（无配置项）
+		code, out = e.api("POST", "/admin/api/providers", map[string]any{
+			"type": "github_oidc", "name": "无配置实例",
+			"config": map[string]any{},
+			"rules":  []map[string]string{{"field": "aud", "pattern": "^https://x$"}},
+		})
+		if code != 201 {
+			t.Errorf("空配置实例 = %d %s, 期望 201", code, out)
+		}
+	})
+
+	t.Run("password 缺必填被拒", func(t *testing.T) {
+		code, out := e.api("POST", "/admin/api/providers", map[string]any{
+			"type": "password", "name": "x", "config": map[string]any{"username": "u"},
+			"rules": []map[string]string{{"field": "username", "pattern": "^u$"}},
+		})
+		if code != 400 {
+			t.Errorf("= %d %s, 期望 400（缺 password）", code, out)
 		}
 	})
 

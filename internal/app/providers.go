@@ -115,12 +115,10 @@ func (s *ProviderService) Delete(ctx context.Context, id int64) error {
 	return s.repo.DeleteProvider(ctx, id)
 }
 
-// Test 用一段 claims 试跑该实例的 Accept + 准入规则。
-// claims 里带 iss/aud 时会一并模拟实例配置核对，逐条规则返回命中情况。
+// Test 用一段 claims 试跑该实例的准入规则，逐条返回命中情况。
+// issuer 的核对在验签阶段写死；aud 就是普通规则字段，claims 里带上即可测。
 type TestResult struct {
-	AcceptOK   *bool             `json:"accept_ok,omitempty"`
-	AcceptMsg  string            `json:"accept_msg,omitempty"`
-	Allowed    bool              `json:"allowed"`
+	Allowed    bool                `json:"allowed"`
 	Results    []domain.RuleResult `json:"results"`
 }
 
@@ -129,36 +127,12 @@ func (s *ProviderService) Test(ctx context.Context, id int64, claims map[string]
 	if err != nil {
 		return nil, err
 	}
-	out := &TestResult{}
-
-	var cfg map[string]any
-	_ = json.Unmarshal([]byte(inst.ConfigJSON), &cfg)
-
-	// Accept 模拟（claims 不含 iss/aud 时不模拟，前端标注）
-	if _, hasIss := claims["iss"]; hasIss {
-		if _, hasAud := claims["aud"]; hasAud {
-			if pt, ok := s.registry.Get(inst.Type); ok {
-				parsed := &plugins.Parsed{Claims: claims}
-				if err := pt.Accept(ctx, parsed, cfg); err != nil {
-					f := false
-					out.AcceptOK = &f
-					out.AcceptMsg = err.Error()
-				} else {
-					t := true
-					out.AcceptOK = &t
-				}
-			}
-		}
-	}
-
 	rules, err := domain.Compile(decodeRules(inst.RulesJSON))
 	if err != nil {
 		return nil, fmt.Errorf("%w: 规则编译失败: %v", ErrInvalid, err)
 	}
+	out := &TestResult{}
 	out.Allowed, out.Results = rules.Match(claims)
-	if out.AcceptOK != nil && !*out.AcceptOK {
-		out.Allowed = false
-	}
 	return out, nil
 }
 
@@ -177,6 +151,15 @@ func validateName(name string) error {
 func validateConfig(pt plugins.PluginType, config map[string]any) (string, error) {
 	if config == nil {
 		config = map[string]any{}
+	}
+	declared := map[string]bool{}
+	for _, f := range pt.ConfigFields() {
+		declared[f.Key] = true
+	}
+	for k := range config {
+		if !declared[k] {
+			return "", fmt.Errorf("%w: 插件 %s 没有配置项 %q（实例不接受的键）", ErrInvalid, pt.Type(), k)
+		}
 	}
 	for _, f := range pt.ConfigFields() {
 		v, ok := config[f.Key]

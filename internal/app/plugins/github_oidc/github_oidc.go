@@ -22,7 +22,7 @@ import (
 	"github.com/lyzz0612/deploy-center/internal/app/plugins"
 )
 
-// DefaultIssuer GitHub 公有云 OIDC 签发者。
+// DefaultIssuer GitHub 公有云 OIDC 签发者，代码写死。
 const DefaultIssuer = "https://token.actions.githubusercontent.com"
 
 const (
@@ -36,7 +36,10 @@ const (
 
 // Plugin 实现 plugins.PluginType。
 type Plugin struct {
-	// 依赖注入（测试用）
+	// issuer 是代码级常量（默认 GitHub 公有云）。
+	// 实例不配置签发者；要接 GitHub Enterprise Server 就写一个换掉它的插件类型。
+	issuer string
+
 	httpClient *http.Client
 	now        func() time.Time
 	jwks       *jwksCache
@@ -44,43 +47,34 @@ type Plugin struct {
 
 var _ plugins.PluginType = (*Plugin)(nil)
 
-func New() *Plugin {
+// New GitHub 公有云插件。
+func New() *Plugin { return NewWithIssuer(DefaultIssuer) }
+
+// NewWithIssuer 指定签发者（测试与 GHES 派生插件用；后台实例不可配）。
+func NewWithIssuer(issuer string) *Plugin {
 	return &Plugin{
+		issuer:     strings.TrimRight(issuer, "/"),
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		now:        time.Now,
 		jwks:       newJWKSCache(),
 	}
 }
 
-func (p *Plugin) Type() string   { return typeName }
+func (p *Plugin) Type() string  { return typeName }
 func (p *Plugin) Label() string  { return "GitHub Actions (OIDC)" }
 func (p *Plugin) Match(r *http.Request) bool {
 	tok := bearer(r)
 	return strings.Count(tok, ".") == 2
 }
 
+// ConfigFields 空：issuer 写死、aud 是普通 claim 由准入规则匹配，实例无配置项。
 func (p *Plugin) ConfigFields() []plugins.Field {
-	return []plugins.Field{
-		{
-			Key:         "audience",
-			Label:       "Audience",
-			Help:        "本服务专属的 audience 值，workflow 里取 OIDC token 时传入，必须精确匹配（如 https://secrets.example.com）",
-			Type:        "text",
-			Required:    true,
-			Placeholder: "https://secrets.example.com",
-		},
-		{
-			Key:         "issuer",
-			Label:       "Issuer（可选）",
-			Help:        "默认 GitHub 公有云；GitHub Enterprise Server 或本地联调时改为对应签发者",
-			Type:        "text",
-			Placeholder: DefaultIssuer,
-		},
-	}
+	return nil
 }
 
 func (p *Plugin) ClaimFields() []plugins.ClaimField {
 	return []plugins.ClaimField{
+		{Key: "aud", Label: "Audience（令牌铸给谁）", Example: "https://secrets.example.com"},
 		{Key: "repository_owner", Label: "仓库所属者", Example: "lyzz0612"},
 		{Key: "repository", Label: "仓库全名", Example: "lyzz0612/minigames"},
 		{Key: "repository_id", Label: "仓库 ID（数字，改名不变）", Example: "987654321"},
@@ -137,12 +131,13 @@ func (p *Plugin) Parse(ctx context.Context, r *http.Request) (*plugins.Parsed, e
 		return nil, fmt.Errorf("令牌负载解析失败: %w", err)
 	}
 
-	// 验签需要签发者的 JWKS；iss 从 claims 里取（Accept 阶段再做实例级比对）
+	// 签发者核对：iss 必须等于插件写死的值。
+	// 先核对再拉 JWKS——否则令牌里的 iss 能把服务引向任意 URL。
 	iss, _ := claims["iss"].(string)
-	if iss == "" {
-		return nil, errors.New("令牌缺少 iss")
+	if iss != p.issuer {
+		return nil, fmt.Errorf("签发者 %q 不是 %s", iss, p.issuer)
 	}
-	jwksURL := strings.TrimRight(iss, "/") + "/.well-known/jwks"
+	jwksURL := p.issuer + "/.well-known/jwks"
 	pub, err := p.jwks.publicKey(ctx, p.httpClient, jwksURL, hdr.Kid)
 	if err != nil {
 		return nil, fmt.Errorf("获取签名公钥失败: %w", err)
@@ -215,22 +210,9 @@ func (p *Plugin) Parse(ctx context.Context, r *http.Request) (*plugins.Parsed, e
 	}, nil
 }
 
-// Accept 实例级配置核对：iss 精确匹配、aud 精确匹配。
+// Accept 实例级核对已并入 Parse（issuer 写死）与准入规则（aud 是普通 claim）。
+// 保留空实现以满足插件契约。
 func (p *Plugin) Accept(ctx context.Context, parsed *plugins.Parsed, cfg map[string]any) error {
-	issuer := DefaultIssuer
-	if v, ok := cfg["issuer"].(string); ok && v != "" {
-		issuer = v
-	}
-	if parsed.Claims["iss"] != issuer {
-		return fmt.Errorf("iss 不匹配（%q ≠ %q）", parsed.Claims["iss"], issuer)
-	}
-	aud, _ := cfg["audience"].(string)
-	if aud == "" {
-		return errors.New("实例缺少 audience 配置")
-	}
-	if parsed.Claims["aud"] != aud {
-		return fmt.Errorf("aud 不匹配")
-	}
 	return nil
 }
 

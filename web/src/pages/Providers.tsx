@@ -11,8 +11,6 @@ interface RuleResult {
 }
 
 interface TestOut {
-  accept_ok?: boolean
-  accept_msg?: string
   allowed: boolean
   results: RuleResult[]
 }
@@ -47,13 +45,6 @@ export function ProvidersPage({ onChanged }: { onChanged: () => void }) {
       return []
     }
   }
-  const parseConfig = (p: Provider): Record<string, string> => {
-    try {
-      return JSON.parse(p.config_json) as Record<string, string>
-    } catch {
-      return {}
-    }
-  }
 
   return (
     <div className="mx-auto max-w-[1000px] px-8 py-6">
@@ -80,7 +71,6 @@ export function ProvidersPage({ onChanged }: { onChanged: () => void }) {
 
       <div className="space-y-2">
         {providers.map((p, i) => {
-          const cfg = parseConfig(p)
           const rules = parseRules(p)
           return (
             <div
@@ -105,15 +95,15 @@ export function ProvidersPage({ onChanged }: { onChanged: () => void }) {
                   </Btn>
                 </div>
               </div>
-              <div className="mt-3 grid grid-cols-[140px_1fr] gap-x-4 gap-y-1 font-mono text-[12px]">
-                <span className="text-muted">audience</span>
-                <span className="truncate text-text">{cfg['audience'] ?? '—'}</span>
-                <span className="text-muted">issuer</span>
-                <span className="truncate text-text">{cfg['issuer'] ?? 'GitHub 默认'}</span>
-                <span className="text-muted">规则 ×{rules.length}</span>
-                <span className="truncate text-muted">
-                  {rules.map((r) => `${r.field}`).join(' · ') || '（无规则 = 不放行）'}
-                </span>
+              <div className="mt-3 font-mono text-[12px] text-muted">
+                {rules.length > 0 ? (
+                  <>
+                    <span className="text-text">准入 ×{rules.length}</span>
+                    {rules.map((r) => ` · ${r.field}`).join('')}
+                  </>
+                ) : (
+                  '（无规则 = 不放行）'
+                )}
               </div>
             </div>
           )
@@ -255,23 +245,25 @@ function ProviderDrawer({
           </Field>
         )}
 
-        {/* 插件声明的配置字段：动态渲染，Secret 字段遮罩 */}
-        <div className="border-t border-line pt-4">
-          <div className="mono-label mb-3">实例配置（由插件类型声明）</div>
-          <div className="space-y-4">
-            {curType?.config_fields.map((f) => (
-              <Field key={f.key} label={f.label} hint={f.help}>
-                <TextInput
-                  mono
-                  type={f.secret ? 'password' : 'text'}
-                  value={config[f.key] ?? ''}
-                  placeholder={f.placeholder}
-                  onChange={(e) => setConfig((prev) => ({ ...prev, [f.key]: e.target.value }))}
-                />
-              </Field>
-            ))}
+        {/* 插件声明的配置字段：动态渲染，Secret 字段遮罩；无声明则不显示该区 */}
+        {(curType?.config_fields.length ?? 0) > 0 && (
+          <div className="border-t border-line pt-4">
+            <div className="mono-label mb-3">实例配置（由插件类型声明）</div>
+            <div className="space-y-4">
+              {curType?.config_fields.map((f) => (
+                <Field key={f.key} label={f.label} hint={f.help}>
+                  <TextInput
+                    mono
+                    type={f.secret ? 'password' : 'text'}
+                    value={config[f.key] ?? ''}
+                    placeholder={f.placeholder}
+                    onChange={(e) => setConfig((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                  />
+                </Field>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* 准入规则编辑器 */}
         <div className="border-t border-line pt-4">
@@ -381,8 +373,6 @@ function TestDrawer({ provider, onClose }: { provider: Provider; onClose: () => 
               )}
             >
               {out.allowed ? '✓ 放行' : '✗ 拒绝'}
-              {out.accept_ok === false && <span className="ml-3 text-[12px]">（{out.accept_msg}）</span>}
-              {out.accept_ok === true && <span className="ml-3 text-[12px] text-muted">（iss/aud 核对通过）</span>}
             </div>
             <div>
               {out.results.map((r, i) => (

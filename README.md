@@ -33,7 +33,7 @@ services:
 
 ## 接入第一个仓库
 
-后台建一个 `GitHub Actions (OIDC)` 实例（audience = 你的域名，准入规则限定 owner），然后：
+后台建一个 `GitHub Actions (OIDC)` 实例（无配置项，准入规则建议：`aud` = 你的域名、`repository_owner` = 你的用户名、`event_name` = 白名单事件），然后：
 
 ```yaml
 jobs:
@@ -84,7 +84,6 @@ jobs:
 ```
 go test ./...                    # 后端：5 包 48 个测试函数
 npm --prefix web run build       # 前端：产物 go:embed 进二进制（约 12.5 MB）
-go run ./tools/mintjwt ...       # 本地假 OIDC 签发者，联调 /v1/export
 ```
 
 技术栈：Go 标准库（`net/http` 路由、AES-GCM、RS256 验签手写）+ 2 个第三方依赖（纯 Go SQLite、x/crypto）；前端 Vite + React 19 + Tailwind 4 + Radix。

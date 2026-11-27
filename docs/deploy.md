@@ -65,7 +65,8 @@ curl http://127.0.0.1:8788/healthz
 ## 5. 首次接入一个仓库（闭环验证）
 
 1. 浏览器打开 `https://secrets.example.com/admin/`，用 `ADMIN_PASSWORD` 登录
-2. **接入 → 新建实例**：类型 `GitHub Actions (OIDC)`，audience 填 `https://secrets.example.com`（= 你的对外地址），规则建议两条：
+2. **接入 → 新建实例**：类型 `GitHub Actions (OIDC)`（无配置项），准入规则建议三条：
+   - `aud` = `^https://secrets.example.com$`（防令牌重放到别处，值 = 你的对外地址）
    - `repository_owner` = `^你的用户名$`
    - `event_name` = `^(push|workflow_dispatch|release)$`
 3. **密钥**：建组（如 `minigames/prod`）并录入第一条密钥

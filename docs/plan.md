@@ -823,6 +823,7 @@ jobs:
 | 10 | Provider 实例与插件类型分开 | `providers` 变实例表（有 id、可多个），类型留在代码；新增 3.2④、5.1 两步接口 |
 | 11 | 要有用户管理 | 用户列表/详情/批准/删除 + 用户组，独立页面 |
 | 12 | 密钥必须加密入库，密钥来自环境变量；后台与授权方看到的是解密后明文 | 11 节整体重写；`secrets` 加 `aad_salt`；新增哨兵自检与 reveal 接口 |
+| 13 | github_oidc 实例**不配置** audience/issuer：issuer 是代码级常量（GHES 走派生插件），`aud` 是普通 claim 由准入规则匹配 | 插件 ConfigFields 清零、ClaimFields 增加 aud、`aud` 建议作为第一条规则（防重放）；配置键严格校验（未声明的键拒绝） |
 
 ---
 
